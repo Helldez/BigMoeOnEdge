@@ -21,6 +21,7 @@
 #include "../moe/gate_gemv.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
+#include "../moe/cache_fill.h"
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
 #include "context_checkpoints.h"
@@ -319,6 +320,8 @@ struct Session::Impl {
     // the context and model are freed. The destructor does that explicitly.
     std::unique_ptr<llama_model, void (*)(llama_model *)> model{nullptr, llama_model_free};
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
+    // Fills ctx's device expert cache in place; reset before ctx, its lanes may be writing the slots.
+    std::unique_ptr<CacheFill> cache_fill;
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     // The experts' copy in a device backend's host memory (MoeStreamConfig::expert_host_buffer):
     // the expert tensors point into it, so it outlives the contexts and the model.
@@ -643,6 +646,7 @@ struct Session::Impl {
         if (mtp_batch_owned) llama_batch_free(mtp_batch);
         if (media_batch_owned) llama_batch_free(media_batch);
         ctx_dft.reset();
+        cache_fill.reset();
         ctx.reset();
         hook.reset();
         model.reset();
@@ -1466,6 +1470,12 @@ bool Session::Impl::create_contexts(Opening & o) {
     // same tensors the streamer serves, so the CPU half reads what the slots would have been filled
     // from (docs/seam.md).
     if (device_cache_armed) cparams.moe_cache_cpu_share = cfg.moe.device_cache_cpu_share;
+    // How the misses are served: all lossless, each compared with the plain upload by the gates.
+    if (device_cache_armed) {
+        cparams.moe_cache_host_call = cfg.moe.device_cache_host_call;
+        cparams.moe_cache_cpu_threads = cfg.moe.device_cache_cpu_threads;
+        cparams.moe_cache_read_ahead = cfg.moe.device_cache_read_ahead;
+    }
 
     // llama.cpp is asked, and where it refuses, asked again with one thing changed at a time
     // (context_fallback.h says in which order, and why none of the three is settled before asking).
@@ -1552,6 +1562,15 @@ bool Session::Impl::create_contexts(Opening & o) {
     // every caller got before this existed.
     const int n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
     llama_set_n_threads(c, cfg.n_threads, n_threads_batch);
+    // The device cache's misses read from the file straight into its slots, where the host writes
+    // the device's memory (moe/cache_fill.h); refused elsewhere, and the misses are copied as before.
+    if (device_cache_armed && cfg.moe.device_cache_fill_lanes > 0) {
+        cache_fill = CacheFill::install(c, cfg.model_path, cfg.moe.device_cache_fill_lanes);
+        log_printf(LogLevel::Info,
+                   cache_fill ? "device expert cache filled in place from the file, %d lanes\n"
+                              : "device expert cache: in-place fill refused (%d lanes asked), misses copied\n",
+                   cfg.moe.device_cache_fill_lanes);
+    }
 
     // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
     // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
@@ -1963,6 +1982,7 @@ bool Session::Impl::arm_device_cache(Opening & o) {
     const bool had_mtp = mtp != nullptr;
     mtp.reset();
     ctx_dft.reset();
+    cache_fill.reset();
     ctx.reset();
     device_cache_armed = true;
     if (!create_contexts(o)) return false;
@@ -2983,21 +3003,26 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     if (!im.read_model(o)) return nullptr;
     if (!im.build_hook(o)) return nullptr;
     if (!im.create_contexts(o)) return nullptr;
-    // dt:open.answer-check
-    if (check && !cfg.trial.answer_device.empty()) {
+    // With a device expert cache the answers are compared once it is armed (below), so what is checked
+    // is the device computing the experts from it, not the context before it.
+    const bool check_after_cache = cfg.moe.device_cache_mb > 0;
+    const auto run_answer_check = [&]() -> bool {
         check->ran = true;
         check->result = im.compare_device_answer(o);
         if (check->result.verdict != detail::DeviceAnswer::Verdict::Confirmed) {
             error = "the device's answers for this model were not confirmed";
-            return nullptr;
+            return false;
         }
         if (im.weigh_device_answer(check->result).side == detail::AnswerSide::Cores) {
             check->cores_faster = true;
             error = "the cores serve this model's requests faster than the device";
-            return nullptr;
+            return false;
         }
         detail::log_memory_snapshot("device-answer-checked");
-    }
+        return true;
+    };
+    // dt:open.answer-check
+    if (check && !cfg.trial.answer_device.empty() && !check_after_cache && !run_answer_check()) return nullptr;
     im.build_sampler(cfg);
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;
@@ -3008,6 +3033,14 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     // dt:open.host-buffer
     if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
+    // dt:open.answer-check-cache
+    if (check && !cfg.trial.answer_device.empty() && check_after_cache) {
+        if (!run_answer_check()) return nullptr;
+        // Here no context is made again after the check: its sequence leaves the KV and the recurrent
+        // state as it decoded them. The data is cleared too, not only the cells: a recurrent state left
+        // in its buffer changed the first request's text.
+        llama_memory_clear(llama_get_memory(im.ctx.get()), /*data=*/true);
+    }
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);

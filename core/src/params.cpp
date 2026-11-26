@@ -552,6 +552,56 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-fill-lanes", "Device cache fill lanes", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache in memory the host writes in place (unified "
+                          "memory), read its misses from the model file straight into the cache on this many "
+                          "lanes instead of copying them from the mapping. 0 copies.");
+        d.value_hint = "N";
+        bounds(d, 0, MoeStreamConfig::io_threads_max, "lanes");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_fill_lanes; });
+        d.details = "Experimental: on a machine whose graphics share the main memory, reads the experts the cache "
+                    "misses straight from the model file into it. 0 is off.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("device-cache-host-call", "Device cache lookup in the graph", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache, look up each layer's experts inside the "
+                          "device's graph, where the device can wait for the host, instead of splitting the graph "
+                          "at every layer.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--device-cache-host-call", "true"}, {"--no-device-cache-host-call", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_host_call; });
+        d.details = "Experimental: one graph per token on the graphics card instead of one pause per layer.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("device-cache-cpu-threads", "Device cache CPU-miss threads", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With --device-cache-host-call and --device-cache-cpu-share, the threads "
+                          "that compute the processor's share of the misses inside the device's graph. 0 keeps "
+                          "the split per layer.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::threads_max, "threads");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_cpu_threads; });
+        d.details =
+            "Experimental: the processor works on the experts the card misses while the card works on the rest.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("device-cache-read-ahead", "Device cache read-ahead", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache, the experts per token of the next layer, "
+                          "named by its router on this layer's input, that are brought into the cache while this "
+                          "layer computes. 0 is off.");
+        d.value_hint = "N";
+        bounds(d, 0, MoeStreamConfig::device_cache_read_ahead_max, "experts");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_read_ahead; });
+        d.details = "Experimental: guesses the next layer's experts and fetches them early. 0 is off.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";

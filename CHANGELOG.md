@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased] - experimental, not for release
+
+This section belongs to an experimental change that pins the llama.cpp submodule to its own fork
+branch (`bmoe/moe-cache-exp-2611`, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
+it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
+
+### Added
+- **A streamed model computed on a device that shares the host's memory.** On a unified-memory
+  machine a model larger than its memory streamed its experts to the cores. `--auto` now prices,
+  against that stream, every layer on the device with the stream's expert cache moved onto it, its
+  misses read from the file straight into the cache and the next layer's experts read ahead; the
+  faster side serves and is timed across loads, the device's answers are compared with the cores'
+  first, and the stream stays behind it as the fallback. On a 16 GB laptop with a 62 GB model
+  (Qwen3.8-Flash-Next Q2_0) decode went from 3.6-6.3 to 13.6-13.9 tok/s with identical text
+  ([hardware-planning.md](docs/hardware-planning.md#a-streamed-model-on-a-device-that-shares-memory)).
+- **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
+  `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
+  ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.
+
+### Changed
+- **The device answer check covers a device expert cache.** It was refused beside one; it now runs
+  once the cache is armed, so the device is checked computing the experts from it, and clears the
+  context's memory with its data afterwards.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

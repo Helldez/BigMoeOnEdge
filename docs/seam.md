@@ -141,6 +141,29 @@ Nothing changes off Hexagon: the commit touches only `ggml/src/ggml-hexagon`. Su
 tiles on a weight write and leaves the session alone there, or gives a streamer another public way to
 refill a weight buffer between graphs, this commit is dropped at the next bump.
 
+## 3c. Device expert cache levers (experimental fork branch)
+
+An experimental branch of the fork, `bmoe/moe-cache-exp-2611` of `Helldez/llama.cpp`, adds one commit
+on top of the pinned branch (hook + Hexagon fix). It is not proposed upstream and it touches
+llama.cpp more than this project's rule allows (hard rule 1 asks for a single small commit); it lives
+on its own branch so the default pin can return to the hook branch unchanged.
+
+- **Host-writable device memory** (`ggml_backend_buffer_i::get_host_base`,
+  `ggml_backend_buffer_get_host_base`, `ggml_backend_tensor_host_ptr`): the host address of device
+  memory the host may store to in place, declared by each backend where the device works on the
+  host's own memory (Metal shared buffers, Vulkan host-coherent memory on integrated GPUs, CUDA
+  managed memory on integrated devices, host buffers). The MoE cache writes its slots, slot maps and
+  read-ahead with stores there, and names no backend.
+- **`GGML_OP_HOST_CALL`**: a host function answered inside a graph (CPU inline, CUDA through a
+  mapped mailbox inside a captured graph, Metal through a shared event between graph segments).
+  The MoE cache's lookup can run as one, so a token is one graph instead of a split per layer.
+- **MoE cache**: `llama_set_moe_cache_fill` (misses written in place by a caller), and
+  `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`.
+
+bmoe drives them through `RunConfig::moe.device_cache_fill_lanes`, `device_cache_host_call`,
+`device_cache_cpu_threads` and `device_cache_read_ahead`, and fills misses from the file with
+`core/src/moe/cache_fill.cpp`. Sunset: dropped with the branch if the levers do not earn a place.
+
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
 Separate from the two streaming hooks above, `session.cpp` links llama.cpp's `common`

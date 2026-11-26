@@ -156,9 +156,12 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.moe.enabled)
             return fail("{trial-device-answer} compares a model held in memory: it does not combine with "
                         "{moe-stream}");
-        if (cfg.moe.device_cache_mb > 0 || !cfg.moe.expert_host_buffer.empty() || cfg.prefill.enabled())
+        // A device cache is compared as the device computes with it: every layer there and its experts
+        // from the cache (the check runs once the cache is armed). The staged host copy and the prefill
+        // device change what the cores' instance would be compared against.
+        if (!cfg.moe.expert_host_buffer.empty() || cfg.prefill.enabled())
             return fail("{trial-device-answer} reopens the model on the cores where the device's answers differ: it "
-                        "does not combine with {device-cache-mb}, {expert-host-buffer} or {prefill-device}");
+                        "does not combine with {expert-host-buffer} or {prefill-device}");
     }
     if (cfg.n_expert_used < 0) {
         return fail("{n-expert-used} cannot be negative (0 keeps the model's own)");

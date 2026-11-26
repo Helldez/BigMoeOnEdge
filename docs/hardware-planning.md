@@ -1340,6 +1340,26 @@ the file's own bytes, on the host and on every device. A host and a device are a
 same experiment: the real layer where both ran it, the synthetic GEMV (which also sweeps the thread
 count) otherwise.
 
+### A streamed model on a device that shares memory
+
+EXPERIMENTAL (`shared_device_cache`, `plan.shared-cache` in [decision-tree.md](decision-tree.md)).
+On a machine whose accelerator reads the host's own memory, a model too large for it streams its
+experts and computes them on the cores. A cache of experts on the device is then no second copy: the
+streaming plan's expert cache, in the same pool, becomes the device's, its misses read from the file
+straight into its slots (`--device-cache-fill-lanes`, at the storage's best lane count for the
+expert slice) and the next layer's experts read ahead (`--device-cache-read-ahead`, the model's
+top-k), and every layer computes on the device. Both sides are priced, the stream at its own
+allocation and the device from its measured dense and expert rates, the model's hit curve at that
+cache size and the storage rate; the device takes over past the stream by the margin, and the side a
+load serves is timed as it serves (`device_cache_tps`, `no_device_cache_tps`). The load compares the
+device's answers with the cores' once the cache is armed (`open.answer-check-cache`) and reopens as
+the stream where they differ or where the device cannot open the model.
+
+Measured on a 16 GB unified-memory laptop with Qwen3.8-Flash-Next Q2_0 (62 GB file, 32 GB of
+experts): the stream decoded at 3.6-6.3 tok/s and the device from a 5 GB cache at 13.6-13.9, the text
+identical; priced at 15.1. On a 12 GB phone the rule does not apply: its GPUs either do not
+reproduce the cores' result or do not run the model's expert matmul.
+
 ### A model held in memory, on a device that shares it
 
 On a machine whose accelerator reads the host's own memory (an integrated GPU, Apple's unified

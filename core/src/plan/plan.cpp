@@ -119,7 +119,8 @@ uint64_t HardwareProfile::device_local_memory() const {
 }
 
 std::vector<std::string> Plan::reproduce_args() const {
-    if (!config.moe.enabled) return {};
+    // Streamed, or computed on a device from a cache of the experts: both are runs the flags set.
+    if (!config.moe.enabled && config.moe.device_cache_mb == 0) return {};
 
     // Rendered from the parameter table rather than from a list kept here: a knob the planner
     // learns to set is then on this line the day it has a row, where a hand-written list left out
@@ -142,7 +143,7 @@ std::vector<std::string> Plan::reproduce_args() const {
 }
 
 std::string Plan::to_flags() const {
-    if (!config.moe.enabled) {
+    if (!config.moe.enabled && config.moe.device_cache_mb == 0) {
         // A plan that streams nothing is a real plan and has to be reproducible too: the flags that
         // matter are the ones it did NOT set, so say so rather than printing an empty line.
         return "# streaming declined; run without " + flag_spelling("moe-stream", "true");

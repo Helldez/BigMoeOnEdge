@@ -4410,6 +4410,132 @@ void back_with_cores(Plan & p, bool whole_on_shared_device) {
     p.config.fallback = std::make_shared<const RunConfig>(held_on_cores(p.config));
 }
 
+// ── a model the plan streams, its experts computed on a device that reads this same memory ──
+// Where the device's memory is the host's, a cache of experts on it is no second copy: the streaming
+// plan's expert cache, in the same pool, becomes the device's, its misses read from the file straight
+// into the cache's slots (moe/cache_fill.h), and every layer computes on the device. Nothing else moves:
+// the dense part is the same mapping either way. Measured on a 16 GB unified-memory laptop with a model
+// four times its memory, the stream on the cores decoded at 3.6-6.3 tok/s and the device from such a
+// cache at 13.6, the text identical. Whether it wins is this machine and this model: both sides are
+// priced (the stream's own allocation, the cache from the device's rates, the model's hit curve and the
+// storage's rate at the expert's size), the faster serves and is timed as it serves
+// (MeasuredKnobs::device_cache_tps, no_device_cache_tps, which no device of its own sets on such a
+// machine), and a side measured stands until the other is priced or measured past it by the margin.
+// The stream stays behind it (RunConfig::fallback) where the device cannot open the model.
+Plan shared_device_cache(Plan p,
+                         const HardwareProfile & hw,
+                         const ModelProfile & m,
+                         const Placement & projected,
+                         const PlanRequest & req,
+                         const PlannerPolicy & pol) {
+    // dt:plan.shared-cache
+    if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !m.is_moe) return p;
+    if (!devices_share_host_memory(hw) || m.n_moe_layer == 0 || m.n_expert_used == 0) return p;
+    if (projected.all_expert_patterns.empty()) return p; // no adapter said how to name the experts
+    for (const char * knob :
+         {"moe-stream", "gpu-layers", "tensor-overrides", "device-cache-mb", "device-split", "cache-mb"})
+        if (req.is_pinned(knob)) return p;
+    const KnobTrialConfig & pending = p.config.trial;
+    if (pending.device_tier >= 0 || pending.shared_device_side >= 0 || pending.width_side >= 0) return p;
+    const ComputeDevice * dev = nullptr;
+    for (const ComputeDevice & d : hw.devices) {
+        if (d.is_cpu || d.usable == Tri::No || !d.reads_host_memory()) continue;
+        if (d.runs_expert_op != Tri::Yes || d.identity_ok == Tri::No) continue;
+        if (expert_rates(hw, d).device <= 0.0 || dense_rates(hw, d).device <= 0.0) continue;
+        if (!dev || expert_rates(hw, d).device > expert_rates(hw, *dev).device) dev = &d;
+    }
+    const uint64_t cache_bytes = (uint64_t) std::max(0, p.config.moe.cache_mb) << 20;
+    const uint32_t slice = (uint32_t) m.expert_slice_bytes;
+    const uint32_t lanes = slice ? hw.storage.best_lanes(slice) : 0;
+    const double flash_mibs = slice && lanes ? hw.storage.rate_at(slice, lanes) : 0.0;
+    const double routed = (double) m.group(WeightGroup::Experts).bytes_per_token;
+    const double stream_s = p.allocation.seconds_per_token;
+    if (!dev || cache_bytes < m.token_cycle_bytes || flash_mibs <= 0.0 || routed <= 0.0 || stream_s <= 0.0) return p;
+
+    // The device's token: every other byte at its dense rate, the hits at its expert rate, each miss read
+    // from flash into its slot and then computed there.
+    double rest = 0.0;
+    for (size_t g = 0; g < (size_t) WeightGroup::count; ++g)
+        if ((WeightGroup) g != WeightGroup::Experts) rest += (double) m.group((WeightGroup) g).bytes_per_token;
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    const double hit = std::clamp(expert_share_at(m, cache_bytes), 0.0, 1.0);
+    const double ex = expert_rates(hw, *dev).device, dn = dense_rates(hw, *dev).device;
+    const double cache_s = rest / gib / dn + hit * routed / gib / ex +
+                           (1.0 - hit) * routed * (1.0 / (flash_mibs * 1024.0 * 1024.0) + 1.0 / (gib * ex));
+    const MeasuredKnobs & mk = m.knobs;
+    const double win = 1.0 + (double) pol.min_backend_win;
+    const double cache_at = mk.device_cache_tps > 0.0 ? mk.device_cache_tps : 1.0 / cache_s;
+    const double stream_at = mk.no_device_cache_tps > 0.0 ? mk.no_device_cache_tps : 1.0 / stream_s;
+    char sides[512];
+    std::snprintf(sides, sizeof(sides),
+                  "%.2f tok/s with every layer on %s from a %s cache filled in place (%s; %.0f%% of a token's "
+                  "routed bytes served, %s; misses read at %.0f MiB/s on %u lanes) against %.2f streamed on the "
+                  "cores (%s)",
+                  cache_at, dev->name.c_str(), size_brief(cache_bytes).c_str(),
+                  mk.device_cache_tps > 0.0 ? "measured on a load here" : "priced from the probed rates", 100.0 * hit,
+                  expert_share_source(m), flash_mibs, lanes, stream_at,
+                  mk.no_device_cache_tps > 0.0 ? "measured on a load here" : "the stream's own price");
+    const std::string margin = u64s((uint64_t) (pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    // The stream is the incumbent: the device takes over only past it by the margin, or where the
+    // stream failed to open here; a device that failed to open stays out.
+    const bool device_wins =
+        !lost(mk.device_cache_unviable) && (lost(mk.no_device_cache_unviable) || cache_at > stream_at * win);
+    Decision d;
+    d.knob = "device-cache-mb";
+    if (!device_wins) {
+        d.value = "0";
+        d.source = mk.no_device_cache_tps > 0.0 || mk.device_cache_tps > 0.0 ? Source::Measured : Source::Derived;
+        d.brief = "Streamed on the cores: on this machine that decodes at least as fast as " + dev->name +
+                  " from a cache in this memory.";
+        d.reason = std::string(sides) + (lost(mk.device_cache_unviable)
+                                             ? "; loads with the device cache failed on this machine"
+                                             : ", not past the " + margin + " margin");
+        // The stream serving here is timed, so the next plan reads it against the cache's price.
+        if (mk.no_device_cache_tps <= 0.0) p.config.trial.device_tier = 0;
+        p.decisions.push_back(d);
+        return p;
+    }
+    Plan q = p;
+    RunConfig & c = q.config;
+    const int layers = (int) m.n_layer + 1; // every block and the output head
+    c.n_gpu_layers = layers;
+    c.device_split.assign(1, {dev->name, layers});
+    c.buft_overrides = projected.all_expert_patterns;
+    c.moe.enabled = false; // the misses are read into the slots; nothing else streams
+    c.moe.cache_mb = 0;    // its memory is the device cache's now
+    c.moe.cache_auto = false;
+    c.prefill = RunConfig().prefill; // the device holds every layer: a prompt computes there too
+    q.allocation.seconds_per_token = cache_at > 0.0 ? 1.0 / cache_at : cache_s; // what this side is predicted at
+    c.moe.overlap = c.moe.io_two_wave = false;
+    c.trial.overlap = false;
+    c.moe.device_cache_mb = (int) mib(cache_bytes);
+    c.moe.device_cache_fill_lanes = (int) lanes;
+    c.moe.device_cache_read_ahead = (int) m.n_expert_used;   // the router's own top-k, one layer ahead
+    if (mk.device_cache_tps <= 0.0) c.trial.device_tier = 1; // served, and timed as it serves
+    // The device computes this model whole now: its answers are compared with the cores' before it serves,
+    // as for a model held whole there (KnobTrialConfig::answer_device), and where they differ the session
+    // reopens as the stream. A device the record already confirmed for this model is not asked again.
+    const bool confirmed = mk.device_answer(dev->name) > 0;
+    if (!confirmed) c.trial.answer_device = dev->name;
+    c.fallback = std::make_shared<const RunConfig>(p.config);
+    d.value = u64s(mib(cache_bytes));
+    d.source = mk.device_cache_tps > 0.0 ? Source::Measured : Source::Derived;
+    d.brief = "Every layer on " + dev->name + ", its experts from a " + size_brief(cache_bytes) +
+              " cache in this memory filled from the file.";
+    d.reason = std::string(sides) + ", past the " + margin +
+               " margin; the streaming plan's expert cache becomes the device's (the same memory), its misses "
+               "read into the slots on " +
+               u64s(lanes) + " lanes and the next layer's " + u64s(m.n_expert_used) +
+               " experts per token read ahead; where the device cannot open the model the session reopens as "
+               "the stream" +
+               (mk.device_cache_tps > 0.0 ? "" : "; this load times its own decode as it serves") +
+               (confirmed ? "; its answers for this model matched the cores' on this machine"
+                          : "; the load compares its answers for this model with the cores' before it serves, and "
+                            "reopens as the stream where they differ");
+    q.decisions.push_back(d);
+    return q;
+}
+
 Plan plan_from(const RunConfig & base,
                const HardwareProfile & hw,
                const ModelProfile & model,
@@ -4433,14 +4559,18 @@ Plan plan_from(const RunConfig & base,
     // beat is one the stream does not beat. Where the device does not keep the model, the session
     // reopens with the plan above, unchanged (RunConfig::fallback): the stream is what this engine
     // adds, and it serves wherever holding the model whole is not the faster run.
-    if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !model.is_moe) return p;
+    if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !model.is_moe)
+        return shared_device_cache(std::move(p), hw, model, projected, req, pol);
     // What the streaming plan may hold of this pool: its ledger's ceiling, the margin already off it.
     const uint64_t room = p.allocation.ledger.holdable_cap;
     // dt:plan.held-whole
-    if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return p;
-    if (req.is_pinned("moe-stream") || req.is_pinned("cache-mb")) return p;
+    if (!devices_share_host_memory(hw) || projected.fitted || room == 0)
+        return shared_device_cache(std::move(p), hw, model, projected, req, pol);
+    if (req.is_pinned("moe-stream") || req.is_pinned("cache-mb"))
+        return shared_device_cache(std::move(p), hw, model, projected, req, pol);
     Plan whole = plan_once(base, hw, model, projected, req, pol, home_from, room);
-    if (whole.config.n_gpu_layers == 0 || whole.config.device_split.size() != 1 || whole.config.moe.enabled) return p;
+    if (whole.config.n_gpu_layers == 0 || whole.config.device_split.size() != 1 || whole.config.moe.enabled)
+        return shared_device_cache(std::move(p), hw, model, projected, req, pol);
     const std::string dev = whole.config.device_split.front().first;
     whole.config.fallback = std::make_shared<const RunConfig>(p.config);
     std::string stream_knobs;
