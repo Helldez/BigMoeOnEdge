@@ -458,6 +458,7 @@ Request fields that are read:
 | `messages` | the whole conversation. `role` is `system` (or `developer`), `user`, `assistant` or `tool`; `content` is a string, an array of `{type: "text", text}` and `{type: "image_url", image_url: {url}}` parts (the URL a `data:<type>;base64,...` one; see Images below), or `null` on an assistant turn that only calls tools. An assistant message may carry `tool_calls` and `reasoning_content`; a tool message carries `tool_call_id`. The last message must be from the user or a tool. |
 | `tools` | functions the model may call: `{type: "function", function: {name, description, parameters}}`. Any other tool type is refused with `400`. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
+| `parallel_tool_calls` | `false` holds a template such as Qwen3.5's to one call per turn (its tool grammar refuses a second, and the parser keeps the first); `true` allows several. Absent (as agent clients send it), what the model's chat template supports (`supports_parallel_tool_calls`), as llama-server decides it. The prompt is the same either way, so the KV is reused across a switch. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
 | `return_progress` | llama-server's field: while the prompt is prefilled, streamed chunks with an empty assistant delta and `prompt_progress: {total, cache, processed, time_ms}`, one before the first piece and one after each. `cache` is the part the context already held; `processed` reaches `total - cache`. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`), whose server default `0` means no ceiling but the context. Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
@@ -723,7 +724,7 @@ each agent at the server. What they share:
 - **Sampling**: `temperature` and `top_p` on both, and `top_k` on Messages, are this request's, as
   on the chat endpoint (with its bounds, and its rule under speculation).
 - **Ignored**: `model` (the loaded one answers), and the fields that only mean something to a hosted
-  service (prompt caching, metadata, `store`, `include`, `prompt_cache_key`, `parallel_tool_calls`).
+  service (prompt caching, metadata, `store`, `include`, `prompt_cache_key`).
 
 ### `POST /v1/messages`
 
@@ -734,7 +735,7 @@ The Anthropic Messages API. Request fields that are read:
 | `system` | a string or an array of `{type: "text", text}` blocks, joined. The per-request `x-anthropic-billing-header:` block Claude Code puts first is client metadata that changes on every request, and is dropped, or no request could reuse the KV. |
 | `messages` | `role` is `user`, `assistant` or `system`; `content` a string or blocks. `user`: `text`, `image` (`source: {type: "base64", media_type, data}`; a `url` source is refused) and `tool_result` (`tool_use_id`, content a string or `text` blocks; a `tool_reference` from Claude Code's tool search reads as `Tool loaded: <name>`). `assistant`: `text`, `thinking` (the reasoning, sent back), `redacted_thinking` (skipped) and `tool_use` (`id`, `name`, `input`). Any other block type is refused with `400`. The last message must be from the user or carry tool results: a prefilled assistant answer is refused, since the engine does not continue one. |
 | `tools` | client tools, `{name, description, input_schema}`. A tool with `defer_loading: true` is not described to the model (tool search loads it later). A server tool (one with a `type` such as `web_search_20250305`) is refused with `400`: nothing here runs it. |
-| `tool_choice` | `{type: "auto"}` (default), `"any"` or `"tool"` (both required: the engine can require a call, not choose which), `"none"`. |
+| `tool_choice` | `{type: "auto"}` (default), `"any"` or `"tool"` (both required: the engine can require a call, not choose which), `"none"`. `disable_parallel_tool_use: true` allows one call per turn; otherwise the template decides, as for `parallel_tool_calls` on the chat endpoint. |
 | `max_tokens` | the budget, read as `max_tokens` on the chat endpoint. Required by the protocol; absent, the `n-predict` parameter. |
 | `thinking` | `{type: "enabled"}` or `"adaptive"` turns thinking on, `"disabled"` off; absent, on unless the person set the `think` parameter. `budget_tokens` and `display` are not read. |
 | `output_config.format` | `{type: "json_schema", schema}`: the answer must match the schema, as `response_format` on the chat endpoint. |
@@ -780,6 +781,7 @@ state they name; `store` itself is accepted and not read. Request fields that ar
 | `input` | a string (one user message) or items: `message` (`role` `user`, `system`, `developer` or `assistant`; content a string or `input_text` / `output_text` / `refusal` parts, and on a user message `input_image` with `image_url` a data URL; a `file_id` is refused), `function_call` (`call_id`, `name`, `arguments`), `function_call_output` (`call_id`, `output` a string or `input_text` parts) and `reasoning` (its `content` text; a summary or an encrypted content is not the reasoning, and is not read). The items of one model turn (reasoning, text, calls) become one assistant message. A file or audio part, or another item type, is refused with `400`. The last item must be from the user or a `function_call_output`. |
 | `tools` | `{type: "function", name, description, parameters}` tools are described to the model. Every other tool type (`web_search`, `namespace`, `custom`, `local_shell`, ...) is dropped, not refused: nothing here runs it, and Codex sends some whatever the provider has. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`, or `{type: "function", name}`, honoured as required. |
+| `parallel_tool_calls` | as on the chat endpoint. |
 | `max_output_tokens` | the budget, read as `max_tokens` on the chat endpoint. |
 | `reasoning.effort` | `"none"` turns thinking off, any other level on; absent, on unless the person set the `think` parameter. |
 | `text.format` | `{type: "json_schema", schema}` or `{type: "json_object"}` constrains the answer, as `response_format` on the chat endpoint. |

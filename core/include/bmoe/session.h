@@ -196,6 +196,10 @@ struct GenerateRequest {
     // describe it, so it needs clear_kv: the next chat turn then prefills from an empty context.
     // Exclusive of `messages`, `tools`, `json_schema` and `grammar`, which all speak through the template.
     bool raw = false;
+    // Whether the model may call more than one of `tools` in this turn (OpenAI's parallel_tool_calls).
+    // Unset: what the chat template supports, as llama-server decides it. It shapes the tool grammar
+    // and the parser, not the rendered prompt.
+    std::optional<bool> parallel_tool_calls{};
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token

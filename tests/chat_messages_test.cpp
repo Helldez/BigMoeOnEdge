@@ -20,6 +20,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -68,7 +69,8 @@ static void response_format_checks(common_chat_templates * tmpls,
                       ToolChoice choice = ToolChoice::Auto, bool offer_tools = false) {
         common_chat_templates_inputs inputs;
         detail::build_turn_inputs(inputs, detail::to_common_messages(convo), think, ctl);
-        detail::add_tools(inputs, offer_tools ? tools : std::vector<ChatTool>{}, choice);
+        detail::add_tools(inputs, offer_tools ? tools : std::vector<ChatTool>{}, choice, std::nullopt,
+                          detail::template_parallel_tool_calls(tmpls));
         inputs.json_schema = schema;
         return common_chat_templates_apply(tmpls, inputs);
     };
@@ -241,11 +243,76 @@ static void completed_json_checks() {
     check(!detail::validate_json_response(msg, err), "a tool call cannot excuse malformed answer content");
 }
 
+// Several calls in one turn (#740). A request that does not say gets what the template supports, as
+// from llama-server, and the prompt is the same either way. llama.cpp's own default, false, holds a
+// specialized parser such as Qwen3.5's to one call (`false_holds_one`); the differential parser's JSON
+// calls repeat regardless of the field, so there only the default is checked.
+static void parallel_call_checks(common_chat_templates * tmpls,
+                                 const llama_vocab * vocab,
+                                 const std::vector<ChatMessage> & convo,
+                                 const std::vector<ChatTool> & tools,
+                                 const std::string & call_text,
+                                 const char * name,
+                                 bool false_holds_one) {
+    std::printf("\nParallel-call checks: %s\n", name);
+    const bool supports = detail::template_parallel_tool_calls(tmpls);
+    check(supports, "the template takes several calls in one turn");
+    auto inputs_for = [&](std::optional<bool> parallel, bool template_parallel, const std::vector<ChatTool> & offered) {
+        common_chat_templates_inputs inputs;
+        detail::build_turn_inputs(inputs, detail::to_common_messages(convo), /*think*/ false, ThinkControl::Template);
+        detail::add_tools(inputs, offered, ToolChoice::Auto, parallel, template_parallel);
+        return inputs;
+    };
+    check(inputs_for(std::nullopt, true, tools).parallel_tool_calls &&
+              !inputs_for(std::nullopt, false, tools).parallel_tool_calls,
+          "a request that does not say gets what the template supports");
+    check(!inputs_for(false, true, tools).parallel_tool_calls && inputs_for(true, false, tools).parallel_tool_calls,
+          "the request's own field wins over the template");
+    check(!inputs_for(true, true, {}).parallel_tool_calls, "a request with no tools leaves it as it was");
+
+    const common_chat_params by_template =
+        common_chat_templates_apply(tmpls, inputs_for(std::nullopt, supports, tools));
+    const common_chat_params one = common_chat_templates_apply(tmpls, inputs_for(false, supports, tools));
+    check(by_template.prompt.str() == one.prompt.str(),
+          "the rendered prompt does not depend on it, so the KV prefix holds when a client switches");
+
+    std::string second = call_text;
+    const size_t at = second.find("calc.py");
+    if (at != std::string::npos) second.replace(at, 7, "test.py");
+    const std::string two = call_text + "\n" + second;
+    const int first_call = (int) common_tokenize(vocab, call_text, false, true).size();
+    std::string err;
+    {
+        detail::ToolGrammar g;
+        check(at != std::string::npos && g.init(by_template, vocab, err) && g.active() &&
+                  first_refused(g, vocab, two) == -1,
+              "by the template's default, two calls pass the grammar token by token");
+    }
+    if (false_holds_one) {
+        detail::ToolGrammar g;
+        check(g.init(one, vocab, err) && g.active() && first_refused(g, vocab, two) >= first_call,
+              "with parallel_tool_calls false, the grammar refuses the second call");
+    }
+    size_t parsed_by_template = 0, parsed_one = 0;
+    try {
+        parsed_by_template =
+            common_chat_parse(common_chat_input(two), false, detail::build_parse_params(by_template)).tool_calls.size();
+        parsed_one =
+            common_chat_parse(common_chat_input(two), false, detail::build_parse_params(one)).tool_calls.size();
+    } catch (const std::exception & e) {
+        std::printf("  parse: %s\n", e.what());
+    }
+    check(parsed_by_template == 2, "the parser reads both calls by the template's default");
+    if (false_holds_one) check(parsed_one == 1, "with parallel_tool_calls false, the parser keeps the first");
+}
+
 int main() {
     completed_json_checks();
     const std::string tmpl = read_file(BMOE_QWEN3_TEMPLATE_PATH);
     check(!tmpl.empty(), "the vendored template is readable");
     auto tmpls = common_chat_templates_init(/*model=*/nullptr, tmpl);
+    // What the session reads at open(): a turn that does not say takes the template's.
+    const bool parallel = detail::template_parallel_tool_calls(tmpls.get());
 
     const std::vector<ChatTool> tools = {
         {"read_file", "Read a file from disk",
@@ -256,7 +323,7 @@ int main() {
                                       {"user", "What is in calc.py?", "", {}, "", ""}};
     common_chat_templates_inputs inputs;
     detail::build_turn_inputs(inputs, detail::to_common_messages(convo), /*think*/ false, ThinkControl::Template);
-    detail::add_tools(inputs, tools, ToolChoice::Auto);
+    detail::add_tools(inputs, tools, ToolChoice::Auto, std::nullopt, parallel);
     common_chat_params cp = common_chat_templates_apply(tmpls.get(), inputs);
     const std::string p1 = cp.prompt.str();
     check(has(p1, "read_file") && has(p1, "Read a file from disk") && has(p1, "You fix code."),
@@ -265,7 +332,7 @@ int main() {
     // No tools on offer: the same conversation renders without them.
     common_chat_templates_inputs bare;
     detail::build_turn_inputs(bare, detail::to_common_messages(convo), false, ThinkControl::Template);
-    detail::add_tools(bare, {}, ToolChoice::Auto);
+    detail::add_tools(bare, {}, ToolChoice::Auto, std::nullopt, parallel);
     check(!has(common_chat_templates_apply(tmpls.get(), bare).prompt.str(), "read_file"),
           "a request with no tools mentions none");
 
@@ -342,7 +409,7 @@ int main() {
             common_chat_templates_inputs think_in;
             detail::build_turn_inputs(think_in, detail::to_common_messages(convo), /*think*/ true,
                                       ThinkControl::Template);
-            detail::add_tools(think_in, tools, ToolChoice::Auto);
+            detail::add_tools(think_in, tools, ToolChoice::Auto, std::nullopt, parallel);
             const common_chat_params tcp = common_chat_templates_apply(tmpls.get(), think_in);
             std::string bad = call_text;
             const size_t at = bad.find("read_file");
@@ -364,11 +431,13 @@ int main() {
             check(g.init(none, vocab, err) && !g.active(), "a turn without a grammar runs unconstrained");
         }
         response_format_checks(tmpls.get(), vocab, convo, tools, call_text, false);
+        parallel_call_checks(tmpls.get(), vocab, convo, tools, call_text, "Qwen3.5 specialized parser", true);
         const std::string auto_tmpl = read_file(BMOE_QWEN3_AUTO_TEMPLATE_PATH);
         check(!auto_tmpl.empty(), "the vendored differential-parser template is readable");
         if (!auto_tmpl.empty()) {
             auto auto_tmpls = common_chat_templates_init(nullptr, auto_tmpl);
             response_format_checks(auto_tmpls.get(), vocab, convo, tools, raw_json, true);
+            parallel_call_checks(auto_tmpls.get(), vocab, convo, tools, raw_json, "differential parser", false);
         }
         llama_model_free(vocab_model);
     }
@@ -393,7 +462,7 @@ int main() {
     convo.push_back(result);
     common_chat_templates_inputs next;
     detail::build_turn_inputs(next, detail::to_common_messages(convo), false, ThinkControl::Template);
-    detail::add_tools(next, tools, ToolChoice::Auto);
+    detail::add_tools(next, tools, ToolChoice::Auto, std::nullopt, parallel);
     const std::string p2 = common_chat_templates_apply(tmpls.get(), next).prompt.str();
     check(has(p2, "def median(values): ...") && has(p2, "calc.py"),
           "the earlier call and the tool's answer are rendered into the next prompt");

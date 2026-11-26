@@ -1366,7 +1366,8 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::read_model`
 - condition: `if (cfg.chatml) {`
-- yes → the GGUF's template. Its thinking control is probed once here.
+- yes → the GGUF's template. Its thinking control is probed once here, and whether it takes several
+  tool calls in one turn is read (`req.render.parallel`).
 - A template that does not load → a warning, and raw prompts.
 
 #### `open.read.vision` — Vision projector
@@ -1734,6 +1735,7 @@ flowchart TD
     req_render["<b>req.render</b><br/>Messages or a raw prompt"]
     req_render_no_think["<b>req.render.no-think</b><br/>Thinking off on a template that cannot switch it: prefill an empty reasoning"]
     req_render_grammar["<b>req.render.grammar</b><br/>The request's grammar, or the template's tool grammar"]
+    req_render_parallel["<b>req.render.parallel</b><br/>Several tool calls in one turn: the request's, or the template's"]
     req_tokenize["<b>req.tokenize</b><br/>Text or images"]
     req_budget["<b>req.budget</b><br/>The answer budget"]
     req_reuse["<b>req.reuse</b><br/>Reuse the KV prefix this conversation already holds"]
@@ -1768,6 +1770,7 @@ flowchart TD
     req_decide_prefix_cache["<b>req.decide.prefix-cache</b><br/>decide(): keep the shared prefix's state"]
     req_render -->|"chat"| req_render_no_think
     req_render -->|"chat"| req_render_grammar
+    req_render -->|"tools"| req_render_parallel
     req_tokenize -->|"tokenized"| req_budget
     req_reuse -->|"prefix shorter than the KV"| req_reuse_cut
     req_reuse_cut -->|"cannot cut"| req_checkpoint_restore
@@ -1840,6 +1843,17 @@ flowchart TD
 - A request GBNF replaces the template's grammar (not lazy).
 - A constrained request whose grammar will not load → refused. A tool grammar that will not load
   → a warning, and the turn runs unconstrained.
+
+#### `req.render.parallel` — Several tool calls in one turn: the request's, or the template's
+- parent: `req.render`
+- when: tools
+- code: `core/src/engine/chat_messages.cpp` · `add_tools`
+- condition: `inputs.parallel_tool_calls = parallel.value_or(template_parallel);`
+- The request's `parallel_tool_calls` when it sends one (on `/v1/messages`,
+  `disable_parallel_tool_use: true` is false). Otherwise what the template supports
+  (`supports_parallel_tool_calls`, read at open), as llama-server decides it.
+- false → on a parser that holds to it (Qwen3.5's), the tool grammar refuses a second call and the
+  parser keeps the first. The rendered prompt is the same either way.
 
 #### `req.tokenize` — Text or images
 - parent: —

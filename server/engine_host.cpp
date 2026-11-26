@@ -491,6 +491,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.messages = req.messages;
     gr.tools = req.tools;
     gr.tool_choice = req.tool_choice;
+    gr.parallel_tool_calls = req.parallel_tool_calls;
     gr.clear_kv = false;
     // A text completion is no conversation: it starts from an empty context, and the chat turn after
     // it prefills its conversation again.
