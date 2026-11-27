@@ -134,6 +134,8 @@ core/
                   lookup finds after a drop; pure policy over a SpanOps port (platform_io underneath)
                 gguf_offsets (tensor → (shard, offset), split ggufs included), expert_layout,
                 expert_stream_source (one reader per shard), router_hook
+                cache_fill - reads a device expert cache's misses from the file straight into its
+                  slots, where the host writes the device's memory in place (experimental)
                 gate_gemv - the router-gate GEMV over float gates and over an int8 mirror, and the
                   timing of both that --gate-mirror auto reads
                 stall_union - the wall time at least one thread was stalled, not the sum of stalls

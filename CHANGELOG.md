@@ -4,6 +4,67 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased] - experimental, not for release
+
+This section belongs to an experimental change that pins the llama.cpp submodule to its own fork
+branch (`bmoe/moe-cache-exp-2611`, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
+it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
+
+### Added
+- **A streamed model computed on a device that shares the host's memory.** On a unified-memory
+  machine a model larger than its memory streamed its experts to the cores. `--auto` now prices,
+  against that stream, every layer on the device with the stream's expert cache moved onto it, its
+  misses read from the file straight into the cache and the next layer's experts read ahead; the
+  faster side serves and is timed across loads, the device's answers are compared with the cores'
+  first, and the stream stays behind it as the fallback. On a 16 GB laptop with a 62 GB model
+  (Qwen3.8-Flash-Next Q2_0) decode went from 3.6-6.3 to 13.6-13.9 tok/s with identical text
+  ([hardware-planning.md](docs/hardware-planning.md#a-streamed-model-on-a-device-that-shares-memory)).
+  Before either side is measured the faster price serves, without the margin a measured side keeps.
+  A long prompt's experts outside the cache are filled on the same lanes: a 3022-token prompt prefilled
+  at 268 tok/s on Qwen3.6-35B (59 before, 538 streamed with the prefill device); the plan does not weigh
+  the prefill yet.
+- **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
+  `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
+  ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.
+- **`--auto` decides the device cache's host call across loads.** Wherever a device expert cache serves, once
+  its decode is timed one load runs with the lookup inside the device's graph and times it, and the faster
+  side serves from then on (`--trial-host-call`, `host_call_tps` in the measured knobs). Measured +5% on a
+  12 GB CUDA card, slower on a unified-memory laptop, where the next load turns it off again.
+  With `--device-cache-cpu-threads`, a prompt whose experts' output is wider than the backend's host call
+  keeps the CPU part as a split: before, a CUDA server crashed on the first long prompt.
+
+- **A device expert cache that admits in the background** (`--device-cache-async-admit`, experimental).
+  With the lookup in the graph and the CPU-miss threads, every miss of a decoded token is computed by the
+  processor while the device computes the hits, and a miss enters the cache through a write made on a thread
+  of its own, only if it is used more than the expert it evicts (decayed use count): no layer waits for an
+  upload, and a miss used once no longer pushes out what keeps being used. On a 12 GB PCIe 3 card with
+  Qwen3.6-35B UD-Q4_K_XL: 52.2 -> 58.6 tok/s over 256 tokens, 48.3 -> 53.8 over 1024. The processor's
+  experts round differently from the device's, so the text is not the plain upload's. Off by default: on a
+  24 GB card where the cache already serves 97% of Flash-Next Q2_0's experts it was slower (68.8 vs 77.8).
+- **CUDA: a host call copies its mailbox 16 bytes per access.** The device read the host's reply a byte at
+  a time over the bus; a layer's CPU-miss output (64 KiB at 8 experts) cost more than computing the misses
+  saved, which is why every CPU share measured with the host call was slower. It now reads and writes the
+  mailbox in 16-byte accesses where both ends allow it.
+
+- **CUDA: a short row of a float matrix-vector product is one warp's.** Where a row fits a few warp loads,
+  each row gets one warp and a block several rows, instead of one block per row and a block-wide
+  reduction: measured +9% steady decode on a 24 GB card with Flash-Next Q2_0, `test-backend-ops` passing.
+- **Layers that share expert tensors share the device cache.** A looped model runs the same blocks more than
+  once per token; the cache counted their experts once per run and two runs fought over one mapping, so the
+  device could not decode such a model. Layers that run the very same expert tensors (detected by the
+  tensors, not by the model) now share one set of slots, each with a slot map of its own: Inkling-2-Mini
+  IQ4_NL decodes on the device at 12.0 tok/s against 9.4 streamed, its experts counted once (15 GB, not 28).
+  In a graph wider than the cache serves, the scheduler kept one copy of a shared tensor from its first
+  layer to its last (7.2 GB of buffers on that model); such layers now read a twin of the tensor (its own
+  header over the same bytes), so each copy lives for one layer (0.9 GB at 512 tokens). With `--auto` the
+  device is chosen on the second load, its answers 100% the cores' top token, 12.6 tok/s against 11.0; with
+  the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
+
+### Changed
+- **The device answer check covers a device expert cache.** It was refused beside one; it now runs
+  once the cache is armed, so the device is checked computing the experts from it, and clears the
+  context's memory with its data afterwards.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

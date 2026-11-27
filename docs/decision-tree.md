@@ -95,7 +95,7 @@ flowchart LR
 - Every check in `validate()` is an early `return fail(...)`: the run does not start, and nothing
   else changes. Several `open` branches are safe only because of these refusals. For instance:
   - the answer check (`open.answer-check`) needs `n_gpu_layers > 0` with streaming off, and no
-    device cache, host buffer or prefill device;
+    host buffer or prefill device (a device cache is checked once armed, `open.answer-check-cache`);
   - `expert_host_buffer` needs a device cache with streaming off;
   - a prefill device needs `n_gpu_layers == 0` and no row streaming.
 
@@ -542,6 +542,8 @@ flowchart TD
     plan_prior_curve["<b>plan.prior-curve</b><br/>No measured curve: price the cache on the prior"]
     plan_backends["<b>plan.backends</b><br/>One backend per card"]
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
+    plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
+    plan_host_call["<b>plan.host-call</b><br/>A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
     plan_tier_rates["<b>plan.tier.rates</b><br/>The device must read experts faster than the host"]
@@ -604,7 +606,9 @@ flowchart TD
     plan_give_way -.-> plan_prior_curve
     plan_prior_curve -.-> plan_backends
     plan_backends -.-> plan_held_whole
-    plan_held_whole -.-> plan_unplannable
+    plan_held_whole -.-> plan_shared_cache
+    plan_shared_cache -.-> plan_host_call
+    plan_host_call -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
     plan_width -.-> plan_regime
@@ -747,13 +751,44 @@ flowchart TD
 #### `plan.held-whole` — Shared memory: hold the whole model on the device, streaming as the fallback
 - parent: —
 - code: `core/src/plan/planner.cpp` · `plan_from`
-- condition: `if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return p;`
+- condition: `if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return shared_device_cache(std::move(p), hw, model, projected, req, pol);`
 - It runs after a plan that streams experts, on a machine whose devices share host memory
   (Apple, an iGPU), when the model fits the memory it can hold.
 - A second `plan_once` with the whole room → when it places everything on one device without
   streaming, that plan wins, with `fallback` = the streaming plan. `open.entry` falls back to the
   streaming plan if the device's answers are not confirmed.
 - Pinned `moe-stream` or `cache-mb` → the streaming plan.
+- Wherever this node keeps the streaming plan, `plan.shared-cache` weighs it next.
+
+#### `plan.shared-cache` — Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]
+- parent: —
+- code: `core/src/plan/planner.cpp` · `shared_device_cache`
+- condition: `if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !m.is_moe) return p;`
+- It runs on a plan that streams experts, on a machine whose devices read the host's memory, when no
+  whole-model placement was taken (`plan.held-whole`).
+- The device must execute the model's expert matmul with the cores' result, not have differed from
+  the cores on this model before (`device_answer`), and have measured dense and expert rates; nothing is pinned among `moe-stream`, `gpu-layers`, `tensor-overrides`,
+  `device-cache-mb`, `device-split`, `cache-mb`; no other cross-load decision is pending.
+- Both sides are priced: the stream at its own allocation, the device from its rates, the model's hit
+  curve at the stream's cache size and the storage rate at the expert slice. A side a load measured
+  (`device_cache_tps`, `no_device_cache_tps`) stands at its measurement.
+- The device wins past the stream by `min_backend_win` once a side is measured, and on two prices alone
+  the faster price wins → every layer on it, the experts
+  overridden to the host, the stream's cache becomes `device_cache_mb`, `device_cache_fill_lanes` =
+  the storage's best lanes, `device_cache_read_ahead` = the model's top-k, `trial.device_tier = 1`,
+  `trial.answer_device` unless confirmed, `fallback` = the streaming plan.
+- Otherwise the stream stays, timed as it serves (`trial.device_tier = 0`).
+
+#### `plan.host-call` — A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]
+- parent: —
+- code: `core/src/plan/planner.cpp` · `choose_host_call`
+- condition: `if (t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0) return;`
+- It runs last, on any plan with a device expert cache (`device_cache_mb > 0`), when neither
+  `device-cache-host-call` nor `trial-host-call` is pinned and no other cross-load side is timed.
+- The cache's side needs a rate first (`no_host_call_tps`, or `device_cache_tps`, timed without it).
+- Loads with it failed `unviable_max` times (`host_call_unviable`) → off.
+- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it.
+- Both measured → the faster serves, and nothing is timed again.
 
 #### `plan.unplannable` — Nothing to plan: unknown model, dense model, unknown memory
 - parent: —
@@ -1158,6 +1193,7 @@ flowchart TD
     open_ctx_ubatch_halve["<b>open.ctx.ubatch-halve</b><br/>Still no context: halve the graph width"]
     open_ctx_mtp["<b>open.ctx.mtp</b><br/>The MTP draft context"]
     open_answer_check["<b>open.answer-check</b><br/>Compare the device's answers with the cores'"]
+    open_answer_check_cache["<b>open.answer-check-cache</b><br/>The same comparison, once a device expert cache is armed"]
     open_answer_verdict["<b>open.answer.verdict</b><br/>Confirmed, differs, or could not compare"]
     open_answer_weigh["<b>open.answer.weigh</b><br/>Confirmed, but are the cores faster for this model's requests?"]
     open_sampler["<b>open.sampler</b><br/>The session's sampler"]
@@ -1238,7 +1274,8 @@ flowchart TD
     open_ctx_op_offload -.-> open_ctx_cache_shrink
     open_ctx_cache_shrink -.-> open_ctx_mtp
     open_ctx_mtp -.-> open_answer_check
-    open_answer_check -.-> open_sampler
+    open_answer_check -.-> open_answer_check_cache
+    open_answer_check_cache -.-> open_sampler
     open_sampler -.-> open_spec
     open_spec -.-> open_stream
     open_stream -.-> open_unstreamed_record
@@ -1441,11 +1478,20 @@ flowchart TD
 #### `open.answer-check` — Compare the device's answers with the cores'
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::open_placed`
-- condition: `if (check && !cfg.trial.answer_device.empty()) {`
-- It runs when the plan put the whole resident model on a shared device (`plan.shared`). A
+- condition: `if (check && !cfg.trial.answer_device.empty() && !check_after_cache && !run_answer_check()) return nullptr;`
+- It runs when the plan put the whole resident model on a shared device (`plan.shared`), right after
+  the contexts are created; with a device expert cache it runs later (`open.answer-check-cache`). A
   reference copy is loaded on the cores. A probe text is decoded on both, row by row, then once
   wide.
 - Not confirmed → this opening ends (`open.reopen`).
+
+#### `open.answer-check-cache` — The same comparison, once a device expert cache is armed
+- parent: —
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (check && !cfg.trial.answer_device.empty() && check_after_cache) {`
+- With `device_cache_mb > 0` (`plan.shared-cache`) the comparison waits for the cache, so the device
+  is checked computing the experts from it. Not confirmed → `open.reopen`. Confirmed → the context's
+  memory is cleared with its data, since no context is made again after the check.
 
 #### `open.answer.verdict` — Confirmed, differs, or could not compare
 - parent: `open.answer-check`

@@ -49,6 +49,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/dense_weights.cpp
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp
+        src/moe/cache_fill.cpp
         src/plan/hardware_probe.cpp
         src/plan/headroom_probe.cpp
         src/plan/bandwidth_probe.cpp

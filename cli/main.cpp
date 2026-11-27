@@ -1388,6 +1388,13 @@ int main(int argc, char ** argv) {
             else
                 std::snprintf(cache, sizeof(cache), "cache off");
             std::printf("mode: expert streaming, %s, dense %s%s\n", cache, dense, cfg.moe.overlap ? ", overlap" : "");
+        } else if (cfg.moe.device_cache_mb > 0 && s.n_expert > 1) {
+            // The experts computed on a device from its cache, the misses read from the file into it or
+            // uploaded: this engine's device tier, not a baseline. Where the device did not keep the model
+            // the session served its fallback instead, which the log above says.
+            std::printf("mode: experts on the device from a %d MiB cache%s%s, dense %s\n", cfg.moe.device_cache_mb,
+                        cfg.moe.device_cache_fill_lanes > 0 ? ", filled in place from the file" : "",
+                        cfg.moe.device_cache_read_ahead > 0 ? ", read ahead" : "", dense);
         } else if (s.n_expert > 1) {
             std::printf("mode: mmap. Expert streaming is OFF on a MoE model (%s, %d experts), so this run is a "
                         "baseline, not this engine: add --moe-stream --overlap to stream the routed "

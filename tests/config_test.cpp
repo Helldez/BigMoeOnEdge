@@ -197,9 +197,13 @@ int main() {
         invalid.n_ctx = 0;
         two.fallback = std::make_shared<const RunConfig>(invalid);
         expect_fail("a fallback configuration that is not valid by itself", two);
+        // A device expert cache is compared as the device computes with it (the check runs once it is armed).
         RunConfig cached = t;
         cached.moe.device_cache_mb = 2048;
-        expect_fail("trial device answer beside a device expert cache", cached);
+        expect_ok("trial device answer beside a device expert cache", cached);
+        RunConfig staged = cached;
+        staged.moe.expert_host_buffer = "accel";
+        expect_fail("trial device answer beside a staged host copy of the experts", staged);
         RunConfig streamed = ok_moe();
         streamed.n_gpu_layers = 49;
         streamed.trial.answer_device = "accel";
