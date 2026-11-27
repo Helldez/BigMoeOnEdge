@@ -56,6 +56,12 @@ struct RoutingTrace {
 std::string format_routing_trace(const RoutingTrace & trace);
 bool parse_routing_trace(const std::string & text, RoutingTrace & out, std::string & error);
 
+// The (layer, expert) pairs the trace decoded, the most often first, as (layer << 16) | expert: what a
+// cache that starts full should hold to miss least on this model's own routing. The decoded tokens
+// only, where the trace has any, since a prompt's wide batches touch most experts once; ties keep the
+// order of layer then expert, so the same trace gives the same list.
+std::vector<uint32_t> hottest_experts(const RoutingTrace & trace);
+
 // The engine's expert cache replayed over a trace: a global cache over (layer, expert) entries budgeted
 // in bytes, one lookup per expert per batch (a repeat in the same batch only promotes), a miss made
 // resident at its layer's expert bytes, eviction after the batch that never takes an entry the batch

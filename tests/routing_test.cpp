@@ -250,5 +250,17 @@ int main() {
     }
 
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
+    // The hottest experts: decoded batches counted, the prompt's left out, ties in layer then expert order.
+    {
+        RoutingTrace t;
+        t.n_layer = 2;
+        t.n_expert = 4;
+        t.batches = {{0, false, {0, 1, 2, 3}}, {0, true, {2, 3}}, {1, true, {1, 3}}, {0, true, {3}}};
+        const std::vector<uint32_t> hot = hottest_experts(t);
+        const std::vector<uint32_t> want = {(0u << 16) | 3, (0u << 16) | 2, (1u << 16) | 1, (1u << 16) | 3};
+        check(hot == want, "hottest experts: decoded counts first, then layer and expert order");
+        t.batches.resize(1);
+        check(hottest_experts(t).size() == 4, "hottest experts: a prompt-only trace counts its prompt");
+    }
     return failures ? 1 : 0;
 }
