@@ -1474,6 +1474,7 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (device_cache_armed) {
         cparams.moe_cache_host_call = cfg.moe.device_cache_host_call;
         cparams.moe_cache_cpu_threads = cfg.moe.device_cache_cpu_threads;
+        cparams.moe_cache_async_admit = cfg.moe.device_cache_async_admit;
         cparams.moe_cache_read_ahead = cfg.moe.device_cache_read_ahead;
     }
 

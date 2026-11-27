@@ -590,6 +590,19 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-async-admit", "Device cache admits in the background", G::Cache,
+                          L::Experimental,
+                          "With --device-cache-host-call and --device-cache-cpu-threads, every miss of a "
+                          "decoded token is computed by the processor, and a miss enters the device cache "
+                          "in the background only if it is used more than the expert it evicts.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--device-cache-async-admit", "true"}, {"--no-device-cache-async-admit", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_async_admit; });
+        d.details = "Experimental: the card never waits for an expert to arrive; the processor computes it meanwhile.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("device-cache-read-ahead", "Device cache read-ahead", G::Cache, L::Experimental,
                           "With a device expert cache, the experts per token of the next layer, "
                           "named by its router on this layer's input, that are brought into the cache while this "

@@ -129,6 +129,10 @@ struct MoeStreamConfig {
     // - with the host call and a CPU share, the cores compute their share of the misses inside the
     //   graph on this many threads while the device computes the hits; 0 keeps the split per layer.
     int device_cache_cpu_threads = 0;
+    // - async admission: with the CPU-miss threads, every miss of a decoded token is computed by them,
+    //   and the misses used more than what they would evict enter the cache through writes made in the
+    //   background, so no layer waits for an upload; the cache stops churning on misses used once.
+    bool device_cache_async_admit = false;
     // - read-ahead: the next layer's router, applied to this layer's input, names this many experts
     //   per token that are filled while this layer computes. 0 is off.
     int device_cache_read_ahead = 0;
@@ -991,6 +995,7 @@ template <class Config> Config held_on_cores(Config cfg) {
     cfg.moe.device_cache_fill_lanes = 0;
     cfg.moe.device_cache_host_call = false;
     cfg.moe.device_cache_cpu_threads = 0;
+    cfg.moe.device_cache_async_admit = false;
     cfg.moe.device_cache_read_ahead = 0;
     cfg.buft_overrides.clear();
     cfg.trial.answer_device.clear();
