@@ -1350,8 +1350,9 @@ straight into its slots (`--device-cache-fill-lanes`, at the storage's best lane
 expert slice) and the next layer's experts read ahead (`--device-cache-read-ahead`, the model's
 top-k), and every layer computes on the device. Both sides are priced, the stream at its own
 allocation and the device from its measured dense and expert rates, the model's hit curve at that
-cache size and the storage rate; the device takes over past the stream by the margin, and the side a
-load serves is timed as it serves (`device_cache_tps`, `no_device_cache_tps`). The load compares the
+cache size and the storage rate; the device takes over past the stream by the margin once a side is
+measured, and on two prices alone the faster price serves (the margin guards a measured incumbent
+against noise, and between two prices there is none), and the side a load serves is timed as it serves (`device_cache_tps`, `no_device_cache_tps`). The load compares the
 device's answers with the cores' once the cache is armed (`open.answer-check-cache`) and reopens as
 the stream where they differ or where the device cannot open the model.
 

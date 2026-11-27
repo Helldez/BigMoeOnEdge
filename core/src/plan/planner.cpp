@@ -4465,7 +4465,12 @@ Plan shared_device_cache(Plan p,
     const double cache_s = rest / gib / dn + hit * routed / gib / ex +
                            (1.0 - hit) * routed * (1.0 / (flash_mibs * 1024.0 * 1024.0) + 1.0 / (gib * ex));
     const MeasuredKnobs & mk = m.knobs;
-    const double win = 1.0 + (double) pol.min_backend_win;
+    // The margin keeps a measured incumbent from flipping on noise. Between two prices there is no
+    // incumbent: the stream's price ran 1.7x optimistic on a 16 GB unified-memory laptop (its reads
+    // contend with the cores' compute) against 1.3x for the device's, so a margin there only hands
+    // the first load to the stream. The faster price serves, and the load's own timing corrects it.
+    const bool any_measured = mk.device_cache_tps > 0.0 || mk.no_device_cache_tps > 0.0;
+    const double win = any_measured ? 1.0 + (double) pol.min_backend_win : 1.0;
     const double cache_at = mk.device_cache_tps > 0.0 ? mk.device_cache_tps : 1.0 / cache_s;
     const double stream_at = mk.no_device_cache_tps > 0.0 ? mk.no_device_cache_tps : 1.0 / stream_s;
     char sides[512];
@@ -4477,7 +4482,8 @@ Plan shared_device_cache(Plan p,
                   mk.device_cache_tps > 0.0 ? "measured on a load here" : "priced from the probed rates", 100.0 * hit,
                   expert_share_source(m), flash_mibs, lanes, stream_at,
                   mk.no_device_cache_tps > 0.0 ? "measured on a load here" : "the stream's own price");
-    const std::string margin = u64s((uint64_t) (pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    const std::string margin =
+        any_measured ? "the " + u64s((uint64_t) (pol.min_backend_win * 100.0f + 0.5f)) + "% margin" : "the other price";
     // The stream is the incumbent: the device takes over only past it by the margin, or where the
     // stream failed to open here; a device that failed to open stays out.
     const bool device_wins =
@@ -4491,7 +4497,7 @@ Plan shared_device_cache(Plan p,
                   " from a cache in this memory.";
         d.reason = std::string(sides) + (lost(mk.device_cache_unviable)
                                              ? "; loads with the device cache failed on this machine"
-                                             : ", not past the " + margin + " margin");
+                                             : ", not past " + margin);
         // The stream serving here is timed, so the next plan reads it against the cache's price.
         if (mk.no_device_cache_tps <= 0.0) p.config.trial.device_tier = 0;
         p.decisions.push_back(d);
@@ -4524,8 +4530,8 @@ Plan shared_device_cache(Plan p,
     d.source = mk.device_cache_tps > 0.0 ? Source::Measured : Source::Derived;
     d.brief = "Every layer on " + dev->name + ", its experts from a " + size_brief(cache_bytes) +
               " cache in this memory filled from the file.";
-    d.reason = std::string(sides) + ", past the " + margin +
-               " margin; the streaming plan's expert cache becomes the device's (the same memory), its misses "
+    d.reason = std::string(sides) + ", past " + margin +
+               "; the streaming plan's expert cache becomes the device's (the same memory), its misses "
                "read into the slots on " +
                u64s(lanes) + " lanes and the next layer's " + u64s(m.n_expert_used) +
                " experts per token read ahead; where the device cannot open the model the session reopens as "

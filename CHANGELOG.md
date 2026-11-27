@@ -19,6 +19,7 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   first, and the stream stays behind it as the fallback. On a 16 GB laptop with a 62 GB model
   (Qwen3.8-Flash-Next Q2_0) decode went from 3.6-6.3 to 13.6-13.9 tok/s with identical text
   ([hardware-planning.md](docs/hardware-planning.md#a-streamed-model-on-a-device-that-shares-memory)).
+  Before either side is measured the faster price serves, without the margin a measured side keeps.
   A long prompt's experts outside the cache are filled on the same lanes: a 3022-token prompt prefilled
   at 268 tok/s on Qwen3.6-35B (59 before, 538 streamed with the prefill device); the plan does not weigh
   the prefill yet.
