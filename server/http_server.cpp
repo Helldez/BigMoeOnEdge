@@ -11,6 +11,7 @@
 #include "agent.h"
 #include "agent_routes.h"
 #include "agent_store.h"
+#include "client_watch.h"
 #include "cpu_thermal.h"
 #include "anthropic_messages.h"
 #include "connect.h"
@@ -98,7 +99,8 @@ constexpr size_t kMaxRequestBytes = 64ull << 20;
 constexpr std::chrono::seconds kEventPingInterval{15};
 // How often an idle event stream looks for its client. A stream's place is one of a few, and a UI
 // that reloads takes a new one at once: a client that closed its connection must not hold the old
-// one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter).
+// one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter), and
+// a running one for a client that left (stream_keepalive.h, client_watch.h).
 constexpr std::chrono::seconds kEventLivenessPoll{1};
 // How often a server started by an app (--parent-pid) looks for it.
 constexpr std::chrono::seconds kParentPollInterval{1};
@@ -938,6 +940,24 @@ json hf_model_json(const HfModel & m) {
                 {"count", m.count}, {"complete", m.complete()}, {"files", files}};
 }
 
+// A chat turn answered whole (no stream), watched for its client: one that leaves gives its turn up,
+// while it waits and while its turn runs, the prefill included (client_watch.h). A turn the watch
+// stopped is answered as one whose client left while it waited, 499 `client_gone`, not as an answer
+// cut short.
+ChatOutcome watched_chat(App & app,
+                         const httplib::Request & req,
+                         const ChatRequest & turn,
+                         const std::function<bool(const TokenMetrics &)> & on_token) {
+    ClientWatch watch([&req] { return req.is_connection_closed(); }, kEventLivenessPoll);
+    ChatOutcome out = app.host.chat(turn, on_token, [&req] { return !req.is_connection_closed(); }, watch.stop_flag());
+    if (watch.gone() && out.result.cancelled) {
+        out.status = 499; // read only by a client that half-closed: one that left reads nothing
+        out.code = error_code::client_gone;
+        out.error = "the client left during its turn";
+    }
+    return out;
+}
+
 // One turn of an agent protocol (Anthropic Messages, OpenAI Responses): the chat endpoint's turn,
 // answered whole through `answer` or streamed through `Stream` (AnthropicStream, ResponsesStream),
 // whose frames are append-only (agent_protocol.h). `keepalive` is what the protocol writes while
@@ -953,7 +973,7 @@ void agent_turn(App & app,
                 Answer answer,
                 const std::string & keepalive) {
     if (!stream) {
-        ChatOutcome out = app.host.chat(turn, nullptr, [&req] { return !req.is_connection_closed(); });
+        ChatOutcome out = watched_chat(app, req, turn, nullptr);
         if (out.status != 200) return send_path_error(req.path, res, out.status, out.error, out.code);
         ensure_tool_call_ids(out.result.tool_calls, meta.id);
         return send_json(res, answer(meta, out.result, finish_reason(out.result, out.n_predict)));
@@ -962,10 +982,10 @@ void agent_turn(App & app,
     res.set_header("X-Accel-Buffering", "no");
     res.set_chunked_content_provider(
         "text/event-stream", [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
-            // As on the chat endpoint, a failed write marks the client gone, and stopping
-            // the work is the host's, through on_token's answer.
+            // As on the chat endpoint, a client that left stops this turn, its prefill included.
+            const auto closed = [&sink] { return !sink.is_writable(); };
             StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
-                                       keepalive, kEventPingInterval);
+                                       keepalive, kEventPingInterval, closed, kEventLivenessPoll);
             Stream s(meta);
             out_stream.write(s.start());
             ChatOutcome out = app.host.chat(
@@ -973,7 +993,7 @@ void agent_turn(App & app,
                 [&](const TokenMetrics & m) {
                     return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning, m.tool_calls));
                 },
-                [&] { return out_stream.write(keepalive); });
+                [&] { return out_stream.write(keepalive); }, out_stream.stop_flag());
             if (out.status != 200) {
                 out_stream.write(s.error(out.status, out.error, out.code));
             } else {
@@ -1238,10 +1258,8 @@ void register_routes(httplib::Server & svr, App & app) {
                 if (m.has_logprobs) logprobs.push_back(logprob_entry(m, cr.turn.top_logprobs));
                 return true;
             };
-            // Waiting for a turn, the only sign of a client that left is its closed connection.
-            ChatOutcome out =
-                app.host.chat(cr.turn, cr.turn.logprobs ? std::function<bool(const TokenMetrics &)>(collect) : nullptr,
-                              [&req] { return !req.is_connection_closed(); });
+            ChatOutcome out = watched_chat(
+                app, req, cr.turn, cr.turn.logprobs ? std::function<bool(const TokenMetrics &)>(collect) : nullptr);
             if (out.status != 200) return send_error(res, out.status, out.error, out.code);
             ensure_tool_call_ids(out.result.tool_calls, meta.id);
             json body = completion_json(meta, out.result, finish_reason(out.result, out.n_predict));
@@ -1253,12 +1271,13 @@ void register_routes(httplib::Server & svr, App & app) {
         res.set_header("Cache-Control", "no-cache");
         res.set_header("X-Accel-Buffering", "no");
         res.set_chunked_content_provider("text/event-stream", [&app, cr, meta, dump](size_t, httplib::DataSink & sink) {
-            // A failed write marks the client gone. Stopping the work is the host's, through
-            // on_token's answer: this handler cannot tell whose turn is running when a write fails.
             // A silent stretch of the turn (a long prefill, a tool call sent only once parsed) is
-            // bounded by a ping, as on the agent endpoints (stream_keepalive.h).
+            // bounded by a ping, as on the agent endpoints, and a client that left stops this turn,
+            // its prefill included (stream_keepalive.h). The stop is this request's own: a write
+            // that fails while another client's turn runs stops nothing of that turn.
+            const auto closed = [&sink] { return !sink.is_writable(); };
             StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
-                                       ": ping\n\n", kEventPingInterval);
+                                       ": ping\n\n", kEventPingInterval, closed, kEventLivenessPoll);
             auto write = [&](const std::string & frame) { out_stream.write(frame); };
             auto chunk = [&](const json & delta, const json & finish, const json & extra) {
                 json c = chunk_json(meta, delta, finish);
@@ -1321,7 +1340,7 @@ void register_routes(httplib::Server & svr, App & app) {
                     write(": waiting for a turn\n\n");
                     return out_stream.alive();
                 },
-                nullptr,
+                out_stream.stop_flag(),
                 // llama-server's progress chunk: an empty assistant delta carrying where the prompt is.
                 [&](const PrefillProgress & p) {
                     if (!cr.return_progress || !out_stream.alive()) return;
@@ -1394,7 +1413,7 @@ void register_routes(httplib::Server & svr, App & app) {
             meta.model = app.host.model_name();
 
             if (!tr.stream) {
-                ChatOutcome out = app.host.chat(tr.turn, nullptr, [&req] { return !req.is_connection_closed(); });
+                ChatOutcome out = watched_chat(app, req, tr.turn, nullptr);
                 if (out.status != 200) return send_error(res, out.status, out.error, out.code);
                 return send_json(res, text_completion_json(dialect, meta, out.result,
                                                            finish_reason(out.result, out.n_predict), tr.turn.prompt));
@@ -1404,8 +1423,10 @@ void register_routes(httplib::Server & svr, App & app) {
             res.set_chunked_content_provider("text/event-stream", [&app, tr, meta, dialect](size_t,
                                                                                             httplib::DataSink & sink) {
                 const auto dump = [](const json & j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); };
+                // A client that left stops this turn, its prefill included (stream_keepalive.h).
+                const auto closed = [&sink] { return !sink.is_writable(); };
                 StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
-                                           ": ping\n\n", kEventPingInterval);
+                                           ": ping\n\n", kEventPingInterval, closed, kEventLivenessPoll);
                 const auto write = [&](const json & j) { out_stream.write("data: " + dump(j) + "\n\n"); };
                 // The text is the generation as written, so each token's text extends the last one's.
                 // A piece goes out once it is whole UTF-8; the answer's end sends whatever is left,
@@ -1428,7 +1449,8 @@ void register_routes(httplib::Server & svr, App & app) {
                     [&] {
                         out_stream.write(": waiting for a turn\n\n");
                         return out_stream.alive();
-                    });
+                    },
+                    out_stream.stop_flag());
                 if (out.status != 200) {
                     write(json{{"error", {{"message", out.error}, {"code", out.code}}}});
                 } else {

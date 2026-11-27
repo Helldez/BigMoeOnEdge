@@ -7,14 +7,22 @@
 //   * a load whose named side will not open opens the plan's other side instead, and the failure is
 //     kept against the side, one more each time: a second failure reaches the count a plan drops the
 //     side at (MeasuredKnobs::unviable_max);
-//   * where the other side does not open either, the load ends in error and nothing is kept.
+//   * where the other side does not open either, the load ends in error and nothing is kept;
+//   * a client that leaves while its turn is in the prefill stops that turn, on each of the four
+//     endpoints that run one, streaming or not, and no other: the turn waiting behind it runs and
+//     answers in full. One without a stream that leaves while it waits gives its place up at once,
+//     while the turn before it still runs. A streaming client that only closes its sending side once
+//     its stream has begun (a half-close) keeps the turn, and so do the turns of a connection kept
+//     alive for a second request; without a stream a half-close counts as leaving, and its client
+//     reads `499 client_gone`.
 //
-// Every wait is for an event (a state, a count), never for time to pass.
+// Every wait is for an event (a state, a count, bytes read), never for time to pass.
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "listen_port.h"
 #include "server.h"
 #include "server_seams.h"
+#include "stream_keepalive.h"
 
 #include <cpp-httplib/httplib.h>
 
@@ -22,6 +30,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -60,21 +70,73 @@ static void check(bool ok, const std::string & what) {
 
 namespace {
 
+// The scripted engine's turns, and what the test tells them: while `hold` is set, a turn waits in
+// its prefill until the test lets one go or the turn's stop is raised, the engine's cancellation
+// point as far as the server can see.
+struct Turns {
+    std::mutex m;
+    std::condition_variable cv;
+    bool hold = false;
+    int let_go = 0;
+    int started = 0, stopped = 0, answered = 0;
+
+    template <class F> bool wait(F pred) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, k_ceiling, pred);
+    }
+    int count(const int & n) {
+        std::lock_guard<std::mutex> lk(m);
+        return n;
+    }
+    void set_hold(bool h) {
+        std::lock_guard<std::mutex> lk(m);
+        hold = h;
+        cv.notify_all();
+    }
+    void release_one() {
+        std::lock_guard<std::mutex> lk(m);
+        ++let_go;
+        cv.notify_all();
+    }
+};
+
 // A session that answers "hi" to every turn.
 class EchoSession final : public HostedSession {
 public:
-    RunResult generate(const GenerateRequest &, const std::function<void(const TokenMetrics &)> & on_token) override {
+    explicit EchoSession(Turns & turns) : turns_(turns) {}
+
+    RunResult generate(const GenerateRequest & gr,
+                       const std::function<void(const TokenMetrics &)> & on_token) override {
+        RunResult r;
+        r.ok = true;
+        {
+            std::unique_lock<std::mutex> lk(turns_.m);
+            ++turns_.started;
+            turns_.cv.notify_all();
+            while (turns_.hold && turns_.let_go == 0) {
+                if (gr.stop && gr.stop->load()) {
+                    ++turns_.stopped;
+                    turns_.cv.notify_all();
+                    r.cancelled = true;
+                    return r;
+                }
+                // The stop is the caller's atomic, raised with no notice: looked at, as the engine does.
+                turns_.cv.wait_for(lk, 5ms);
+            }
+            if (turns_.hold) --turns_.let_go;
+        }
         TokenMetrics m;
         m.step = 1;
         m.steps = 1;
         m.piece = "hi";
         m.text = "hi";
         if (on_token) on_token(m);
-        RunResult r;
-        r.ok = true;
         r.generated_text = "hi";
         r.summary.n_generated = 1;
         r.summary.s_per_token = 0.01;
+        std::lock_guard<std::mutex> lk(turns_.m);
+        ++turns_.answered;
+        turns_.cv.notify_all();
         return r;
     }
     DecideResult decide(const DecideRequest &) override { return {}; }
@@ -86,8 +148,133 @@ public:
     double load_seconds() const override { return 0.01; }
 
 private:
+    Turns & turns_;
     std::string arch_ = "fakemoe";
 };
+
+// A client on a socket of its own, for what an HTTP library's client does not do: leave while its
+// request runs, or close only its sending side.
+class RawClient {
+public:
+    explicit RawClient(int port) : s_(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) {
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_port = htons((unsigned short) port);
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (s_ != INVALID_SOCKET && ::connect(s_, (const sockaddr *) &a, sizeof a) != 0) close();
+        if (s_ == INVALID_SOCKET) return;
+#if defined(_WIN32)
+        const DWORD ms = (DWORD) std::chrono::duration_cast<std::chrono::milliseconds>(k_ceiling).count();
+        ::setsockopt(s_, SOL_SOCKET, SO_RCVTIMEO, (const char *) &ms, sizeof ms);
+#else
+        timeval tv{};
+        tv.tv_sec = (decltype(tv.tv_sec)) k_ceiling.count();
+        ::setsockopt(s_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+#endif
+    }
+    ~RawClient() { close(); }
+    RawClient(const RawClient &) = delete;
+    RawClient & operator=(const RawClient &) = delete;
+
+    bool send(const std::string & bytes) {
+        size_t off = 0;
+        while (s_ != INVALID_SOCKET && off < bytes.size()) {
+            const auto n = ::send(s_, bytes.data() + off, (int) (bytes.size() - off), 0);
+            if (n <= 0) return false;
+            off += (size_t) n;
+        }
+        return s_ != INVALID_SOCKET;
+    }
+    // A half-close: the request is sent, and the client still reads.
+    void half_close() {
+#if defined(_WIN32)
+        ::shutdown(s_, SD_SEND);
+#else
+        ::shutdown(s_, SHUT_WR);
+#endif
+    }
+    void close() {
+        if (s_ == INVALID_SOCKET) return;
+#if defined(_WIN32)
+        ::closesocket(s_);
+#else
+        ::close(s_);
+#endif
+        s_ = INVALID_SOCKET;
+    }
+    // Reads until `done` holds for what has arrived; false when the connection ends (or the ceiling
+    // passes) first.
+    bool read_until(const std::function<bool(const std::string &)> & done) {
+        char buf[4096];
+        while (!done(got)) {
+            if (s_ == INVALID_SOCKET) return false;
+            const auto n = ::recv(s_, buf, (int) sizeof buf, 0);
+            if (n <= 0) return false;
+            got.append(buf, (size_t) n);
+        }
+        return true;
+    }
+    bool read_until(const std::string & marker) {
+        return read_until([&](const std::string & g) { return g.find(marker) != std::string::npos; });
+    }
+
+    std::string got; // everything read so far
+
+private:
+    socket_t s_;
+};
+
+int occurrences(const std::string & s, const std::string & what) {
+    int n = 0;
+    for (size_t at = s.find(what); at != std::string::npos; at = s.find(what, at + what.size()))
+        ++n;
+    return n;
+}
+
+// A POST as raw HTTP/1.1.
+std::string http_post(const char * path, const json & body, const char * connection = "close") {
+    const std::string b = body.dump();
+    return std::string("POST ") + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n" +
+           "Content-Length: " + std::to_string(b.size()) + "\r\nConnection: " + connection + "\r\n\r\n" + b;
+}
+
+const json k_hello = json::array({{{"role", "user"}, {"content", "hello"}}});
+
+// A chat request as raw HTTP/1.1.
+std::string chat_request(bool stream, const char * connection = "close") {
+    return http_post("/v1/chat/completions", {{"messages", k_hello}, {"max_tokens", 4}, {"stream", stream}},
+                     connection);
+}
+
+// The endpoints that run a chat turn, each with the last thing its stream sends before the turn's
+// first token: the headers, or the protocol's opening frames.
+struct TurnEndpoint {
+    const char * path;
+    json body;
+    const char * opening;
+};
+
+std::vector<TurnEndpoint> turn_endpoints(bool stream) {
+    std::vector<TurnEndpoint> e = {
+        {"/v1/chat/completions", {{"messages", k_hello}, {"max_tokens", 4}}, "\r\n\r\n"},
+        {"/v1/messages", {{"model", "m"}, {"messages", k_hello}, {"max_tokens", 4}}, "message_start"},
+        {"/v1/responses", {{"model", "m"}, {"input", "hello"}, {"max_output_tokens", 4}}, "response.in_progress"},
+        {"/v1/completions", {{"prompt", "hello"}, {"max_tokens", 4}}, "\r\n\r\n"},
+    };
+    for (TurnEndpoint & x : e)
+        x.body["stream"] = stream;
+    return e;
+}
+
+// Whether `got` holds all a stream sent up to `opening`, its chunk's end included: a client that has
+// read it has nothing left unread, so its close is a plain end of stream rather than a reset.
+bool has_opening(const std::string & got, const char * opening) {
+    const auto ends = [&](const char * e) {
+        const size_t n = std::strlen(e);
+        return got.size() >= n && got.compare(got.size() - n, n, e) == 0;
+    };
+    return got.find(opening) != std::string::npos && (ends("\r\n\r\n") || ends("\n\n\r\n"));
+}
 
 // What the scripted engine and planner did, and what the test tells them to do next.
 struct Script {
@@ -136,6 +323,20 @@ bool wait_info(httplib::Client & cli, const std::function<bool(const json &)> & 
     return false;
 }
 
+// Wait until `n` turns wait in line, as /metrics counts them (llama-server's requests_deferred); the
+// line changes on the server's own threads.
+bool wait_deferred(httplib::Client & cli, int n) {
+    const std::string key = "\nllamacpp:requests_deferred ";
+    const auto end = std::chrono::steady_clock::now() + k_ceiling;
+    while (std::chrono::steady_clock::now() < end) {
+        auto res = cli.Get("/metrics");
+        const size_t at = res && res->status == 200 ? res->body.find(key) : std::string::npos;
+        if (at != std::string::npos && std::atoi(res->body.c_str() + at + key.size()) == n) return true;
+        std::this_thread::sleep_for(5ms);
+    }
+    return false;
+}
+
 bool ready(const json & i) {
     return i.value("state", "") == "ready";
 }
@@ -174,6 +375,7 @@ int main() {
     }
 
     Script sc;
+    Turns turns;
     ServerSeams seams;
     seams.open_session = [&](const SessionConfig &, std::string & error) -> std::unique_ptr<HostedSession> {
         std::lock_guard<std::mutex> lk(sc.m);
@@ -186,7 +388,7 @@ int main() {
         }
         ++sc.opened;
         sc.changed();
-        return std::make_unique<EchoSession>();
+        return std::make_unique<EchoSession>(turns);
     };
     // A plan that names a side of the device tier, as one beside a card of its own does; its own value
     // `trial-device-cache` tells the plan as made from the other side's.
@@ -327,6 +529,123 @@ int main() {
               "the other side is loaded again");
         check(knobs().find("unviable=device_cache:" + std::to_string(MeasuredKnobs::unviable_max)) != std::string::npos,
               "the second failure is counted on the first: the side has reached the limit");
+    }
+
+    // ── a streaming client that leaves stops its own turn, in the prefill, on every streaming endpoint ──
+    // What the stream sent is read first, so the close is a plain end of stream, not a reset: the first
+    // keep-alive after it still goes out, and only the second fails.
+    for (const TurnEndpoint & e : turn_endpoints(true)) {
+        const int started = turns.count(turns.started), stopped = turns.count(turns.stopped);
+        turns.set_hold(true);
+        RawClient a(port);
+        check(a.send(http_post(e.path, e.body)) && turns.wait([&] { return turns.started == started + 1; }) &&
+                  a.read_until([&](const std::string & g) { return has_opening(g, e.opening); }),
+              std::string(e.path) + ": a streamed turn is held in its prefill, its stream begun");
+        a.close();
+        check(turns.wait([&] { return turns.stopped == stopped + 1; }),
+              std::string(e.path) + ": the client that leaves stops its turn inside the prefill");
+        turns.set_hold(false);
+    }
+
+    // ── ... and so does one that does not stream: nothing is sent before its answer, so its close is a
+    // plain end of stream as well ──
+    for (const TurnEndpoint & e : turn_endpoints(false)) {
+        const int started = turns.count(turns.started), stopped = turns.count(turns.stopped);
+        turns.set_hold(true);
+        RawClient a(port);
+        check(a.send(http_post(e.path, e.body)) && turns.wait([&] { return turns.started == started + 1; }),
+              std::string(e.path) + " without streaming: a turn is held in its prefill");
+        a.close();
+        check(turns.wait([&] { return turns.stopped == stopped + 1; }),
+              std::string(e.path) + " without streaming: the client that leaves stops its turn inside the prefill");
+        turns.set_hold(false);
+    }
+
+    // ── ... and no other: the turn waiting behind it runs ──
+    for (const bool stream : {true, false}) {
+        const std::string held = stream ? "a streamed turn" : "a turn without streaming";
+        const int started = turns.count(turns.started), stopped = turns.count(turns.stopped);
+        turns.set_hold(true);
+        RawClient a(port), b(port);
+        check(a.send(chat_request(stream)) && turns.wait([&] { return turns.started == started + 1; }),
+              held + " is held in its prefill");
+        check(b.send(chat_request(true)) && b.read_until(": waiting for a turn"), "a second waits behind it");
+        if (stream)
+            check(a.read_until([](const std::string & g) { return has_opening(g, "\r\n\r\n"); }),
+                  "the held turn's stream has begun");
+        a.close();
+        check(turns.wait([&] { return turns.stopped == stopped + 1; }),
+              "the client of " + held + " that leaves stops its turn inside the prefill");
+        check(turns.wait([&] { return turns.started == started + 2; }), "and the turn waiting behind it runs");
+        turns.release_one();
+        check(b.read_until("data: [DONE]") && turns.count(turns.stopped) == stopped + 1,
+              "it answers in full: the stop was the leaving client's alone");
+        turns.set_hold(false);
+    }
+
+    // ── a client without a stream that leaves while it waits gives its place up at once ──
+    {
+        const int started = turns.count(turns.started), stopped = turns.count(turns.stopped);
+        turns.set_hold(true);
+        RawClient a(port), b(port);
+        check(a.send(chat_request(true)) && turns.wait([&] { return turns.started == started + 1; }),
+              "a streamed turn is held in its prefill");
+        check(b.send(chat_request(false)) && wait_deferred(cli, 1), "a second, without streaming, waits behind it");
+        b.close();
+        check(wait_deferred(cli, 0) && turns.count(turns.started) == started + 1,
+              "the waiting client that leaves gives its place up while the turn before it still runs");
+        turns.release_one();
+        check(a.read_until("data: [DONE]") && turns.count(turns.stopped) == stopped,
+              "and the running turn answers in full");
+        turns.set_hold(false);
+    }
+
+    // ── a streaming client that only half-closes keeps its turn (without a stream a half-close counts as
+    // leaving, docs/server-api.md) ──
+    {
+        const int started = turns.count(turns.started), stopped = turns.count(turns.stopped);
+        turns.set_hold(true);
+        RawClient c(port);
+        check(c.send(chat_request(true)) && turns.wait([&] { return turns.started == started + 1; }),
+              "a streamed turn is held in its prefill");
+        c.half_close();
+        check(c.read_until([](const std::string & g) { return occurrences(g, ": ping") >= StreamKeepalive::kProbes; }),
+              "a client that half-closes reads the keep-alives the closed-reading connection gets");
+        turns.release_one();
+        check(c.read_until("data: [DONE]") && turns.count(turns.stopped) == stopped,
+              "and keeps its turn: the answer comes in full");
+        turns.set_hold(false);
+    }
+
+    // ── without a stream nothing tells a half-close from a client that left: it counts as leaving, and
+    // the client reads why ──
+    {
+        const int started = turns.count(turns.started), stopped = turns.count(turns.stopped);
+        turns.set_hold(true);
+        RawClient n(port);
+        check(n.send(chat_request(false)) && turns.wait([&] { return turns.started == started + 1; }),
+              "a turn without streaming is held in its prefill");
+        n.half_close();
+        check(turns.wait([&] { return turns.stopped == stopped + 1; }) && n.read_until([](const std::string & g) {
+            return g.find("client_gone") != std::string::npos;
+        }) && n.got.rfind("HTTP/1.1 499", 0) == 0,
+              "a half-close without streaming stops its turn, answered 499 client_gone");
+        turns.set_hold(false);
+    }
+
+    // ── a connection kept alive: neither request's turn is stopped ──
+    {
+        const int answered = turns.count(turns.answered), stopped = turns.count(turns.stopped);
+        RawClient k(port);
+        check(k.send(chat_request(true, "keep-alive")) && k.read_until("data: [DONE]") && k.read_until("\r\n0\r\n\r\n"),
+              "a streamed answer on a connection kept alive");
+        k.got.clear();
+        check(k.send(chat_request(false)) && k.read_until([](const std::string & g) {
+            return g.find("\"hi\"") != std::string::npos;
+        }) && k.got.rfind("HTTP/1.1 200", 0) == 0,
+              "then a second request on it");
+        check(turns.count(turns.answered) == answered + 2 && turns.count(turns.stopped) == stopped,
+              "both turns answered, none stopped");
     }
 
     const bool listening = stop_future.wait_for(k_ceiling) == std::future_status::ready;

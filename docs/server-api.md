@@ -600,8 +600,16 @@ connection stays open. Once its turn runs, any 15 s with nothing to send (a long
 stretch the parser holds back) gets a keep-alive on every streaming endpoint (a `: ping`
 comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
 one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
-nothing else; a streaming client that disconnects during its own answer stops that answer. A
-disconnect never ends another client's turn. With 16 requests already waiting the next gets `429`.
+nothing else. A client that disconnects during its own turn stops that turn, its prefill included.
+Without streaming the server looks at the connection once a second, and one that reads closed ends
+the turn with `499 client_gone`; a half-close (a client that closes its sending side once its
+request is sent) reads the same and counts as leaving, without streaming as while waiting. A
+stream looks once a second too, and when its connection reads closed the keep-alive goes out at
+once, so the write that fails comes a second or two after the client left, not at the next ping; a
+client that half-closes once its stream has begun reads those keep-alives and keeps its turn, and a
+stream whose connection already reads closed when it would begin is ended by the HTTP library. How
+soon a prefill then ends depends on where it runs; one fully on a GPU is untested. A disconnect
+never ends another client's turn. With 16 requests already waiting the next gets `429`.
 
 Streaming response: `text/event-stream`, one `data: <chunk>` per token, then `data: [DONE]`.
 Chunks are OpenAI `chat.completion.chunk` objects; the delta carries `content` and, for
