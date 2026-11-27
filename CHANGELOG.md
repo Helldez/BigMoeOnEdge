@@ -33,6 +33,9 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   With `--device-cache-cpu-threads`, a prompt whose experts' output is wider than the backend's host call
   keeps the CPU part as a split: before, a CUDA server crashed on the first long prompt.
 
+- **CUDA: a short row of a float matrix-vector product is one warp's.** Where a row fits a few warp loads,
+  each row gets one warp and a block several rows, instead of one block per row and a block-wide
+  reduction: measured +9% steady decode on a 24 GB card with Flash-Next Q2_0, `test-backend-ops` passing.
 - **Layers that share expert tensors share the device cache.** A looped model runs the same blocks more than
   once per token; the cache counted their experts once per run and two runs fought over one mapping, so the
   device could not decode such a model. Layers that run the very same expert tensors (detected by the
