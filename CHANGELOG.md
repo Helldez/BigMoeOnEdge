@@ -26,6 +26,10 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
 - **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
   `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
   ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.
+- **`--auto` decides the device cache's host call across loads.** Wherever a device expert cache serves, once
+  its decode is timed one load runs with the lookup inside the device's graph and times it, and the faster
+  side serves from then on (`--trial-host-call`, `host_call_tps` in the measured knobs). Measured +5% on a
+  12 GB CUDA card, slower on a unified-memory laptop, where the next load turns it off again.
 
 - **Layers that share expert tensors share the device cache.** A looped model runs the same blocks more than
   once per token; the cache counted their experts once per run and two runs fought over one mapping, so the

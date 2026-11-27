@@ -4160,6 +4160,35 @@ int main() {
                       "device tier, the cache measured past the fitter's price: kept, the other side never opened",
                       e ? e->reason : "no decision");
             }
+            // The cache kept on a measured rate: the next load looks its experts up inside the device's
+            // graph and times it; with both sides measured the faster serves and nothing is timed again.
+            {
+                MeasuredKnobs kept;
+                kept.device_cache_tps = 20.0;
+                const Plan hc = tier_on(slow_cores, kept);
+                const Decision * h = find(hc, "device-cache-host-call");
+                check(hc.config.moe.device_cache_host_call && hc.config.trial.host_call_side == 1 && h &&
+                          h->source == Source::Derived && validate(hc.config).ok &&
+                          (!hc.config.fallback || !hc.config.fallback->moe.device_cache_host_call),
+                      "host call, the cache's side measured: served with the lookup in the graph and timed",
+                      h ? h->reason : "no decision");
+                kept.host_call_tps = 21.0;
+                const Plan faster = tier_on(slow_cores, kept);
+                check(faster.config.moe.device_cache_host_call && faster.config.trial.host_call_side == -1,
+                      "host call, measured faster: kept, not timed again");
+                kept.host_call_tps = 19.0;
+                const Plan slower = tier_on(slow_cores, kept);
+                check(!slower.config.moe.device_cache_host_call && slower.config.trial.host_call_side == -1,
+                      "host call, measured slower: off, not timed again");
+                kept.host_call_tps = 0.0;
+                kept.host_call_unviable = MeasuredKnobs::unviable_max;
+                const Plan failed = tier_on(slow_cores, kept);
+                check(!failed.config.moe.device_cache_host_call && failed.config.trial.host_call_side == -1,
+                      "host call, failed to open here: off");
+                // A load still timing the cache's own side leaves the lookup alone.
+                check(!tier.config.moe.device_cache_host_call && tier.config.trial.host_call_side == -1,
+                      "host call, the device tier still timed: one trial at a time");
+            }
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;
             check(tier_on(slow_cores, under).config.trial.device_tier == 0,
