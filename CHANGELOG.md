@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A client that leaves stops its turn, the prefill included** (#743). Once its turn ran, a client
+  that left was noticed only by a write that failed: on a stream at the turn's first token, and
+  without one never. A long prompt nobody would read was prefilled to its end (without streaming,
+  answered in full), and the next request, often the same agent's correction, waited behind it. The
+  turn's own stop now goes up, which the engine reads at its cancellation points, inside a prefill
+  too. Without streaming, the server looks at the connection once a second, and one that reads
+  closed stops the turn, answered `499 client_gone`; as while waiting, a half-close counts as
+  leaving. On a stream a write that fails raises it. In a silent prefill the first write after the
+  client left still goes out and only the next one fails, up to 30 s later at one ping per 15 s, so
+  once a second the stream also looks at its connection, and when it reads closed the keep-alive
+  goes out at once: the write that fails comes a second or two after the client left, and a client
+  that only closed its sending side reads those keep-alives and keeps its turn. On
+  `/v1/chat/completions`, `/v1/messages`, `/v1/responses` and the text completions. A disconnect
+  still never ends another client's turn (#346). How soon a prefill then ends depends on where it
+  runs; a prefill fully on the GPU is untested ([server-api.md](docs/server-api.md)). By @pt7777
+  (#743).
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

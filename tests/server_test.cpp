@@ -27,6 +27,7 @@
 #include "access.h"
 #include "agent_protocol.h"
 #include "anthropic_messages.h"
+#include "client_watch.h"
 #include "cpu_thermal.h"
 #include "decide_protocol.h"
 #include "download_policy.h"
@@ -3006,21 +3007,23 @@ static void service_tests() {
 }
 
 // A streamed turn's writer (stream_keepalive.h). Timing-based: the margins are wide (a keep-alive
-// interval of 30 ms checked over 400 ms; writes every 10 ms against an interval of 1 s) so a
-// loaded CI machine does not flip them.
+// interval of 30 ms checked over 400 ms; writes every 10 ms against an interval of 1 s; looks every
+// 20 ms checked over 400 ms) so a loaded CI machine does not flip them.
 static void keepalive_tests() {
     using namespace std::chrono_literals;
     struct Sink {
         std::mutex m;
         std::vector<std::string> frames;
         bool fail = false;
+        int ok_left = -1; // writes that still go through before every one fails; -1: no limit
         void set_fail(bool v) {
             std::lock_guard<std::mutex> g(m);
             fail = v;
         }
         bool write(const std::string & f) {
             std::lock_guard<std::mutex> g(m);
-            if (fail) return false;
+            if (fail || ok_left == 0) return false;
+            if (ok_left > 0) --ok_left;
             frames.push_back(f);
             return true;
         }
@@ -3070,6 +3073,97 @@ static void keepalive_tests() {
         sink.set_fail(false);
         std::this_thread::sleep_for(100ms);
         check(!w.write("y") && sink.size() == 0, "keepalive: nothing is written after a failed write, ping included");
+        check(w.stop_flag()->load(), "keepalive: a failed write raises the turn's stop");
+    }
+    {
+        Sink sink;
+        std::atomic<int> looks{0};
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 1000ms,
+                          [&] {
+                              ++looks;
+                              return false;
+                          },
+                          20ms);
+        std::this_thread::sleep_for(400ms);
+        w.stop();
+        check(looks >= 2 && sink.count("PING") == 0,
+              "keepalive: a connection that reads open is looked at and gets no early ping (" +
+                  std::to_string(looks.load()) + " looks)");
+        check(!w.stop_flag()->load(), "keepalive: and its turn's stop stays down");
+    }
+    {
+        // A half-close: the connection reads closed, every write goes through.
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 1000ms, [] { return true; },
+                          20ms);
+        std::this_thread::sleep_for(400ms);
+        const int pings = sink.count("PING");
+        check(pings == StreamKeepalive::kProbes,
+              "keepalive: a connection that reads closed gets the probes and then no more (" + std::to_string(pings) +
+                  ")");
+        check(w.write("t") && !w.stop_flag()->load(), "keepalive: a client that only half-closed keeps its turn");
+        w.stop();
+    }
+    {
+        // A client that left: the first write after it still goes out, its reset fails the next.
+        Sink sink;
+        sink.ok_left = 1;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 1000ms, [] { return true; },
+                          20ms);
+        std::this_thread::sleep_for(400ms);
+        check(w.stop_flag()->load() && !w.alive() && sink.count("PING") == 1,
+              "keepalive: a client that left is found by the second probe, which raises the turn's stop");
+        w.stop();
+    }
+}
+
+// The watch over a turn answered whole (client_watch.h). Timing-based like the keep-alive's: looks
+// every 20 ms checked over 400 ms, and an end checked against a look of 1 s.
+static void client_watch_tests() {
+    using namespace std::chrono_literals;
+    {
+        std::atomic<int> looks{0};
+        {
+            ClientWatch w(
+                [&] {
+                    ++looks;
+                    return false;
+                },
+                20ms);
+            std::this_thread::sleep_for(400ms);
+            check(looks >= 2 && !w.gone() && !w.stop_flag()->load(),
+                  "client watch: a connection that reads open is looked at and its turn's stop stays down (" +
+                      std::to_string(looks.load()) + " looks)");
+        }
+        const int after = looks;
+        std::this_thread::sleep_for(100ms);
+        check(looks == after, "client watch: nothing is looked at once it has ended");
+    }
+    {
+        std::atomic<int> looks{0};
+        ClientWatch w(
+            [&] {
+                ++looks;
+                return true;
+            },
+            20ms);
+        std::this_thread::sleep_for(400ms);
+        check(w.gone() && w.stop_flag()->load(), "client watch: a connection that reads closed raises the turn's stop");
+        check(looks == 1, "client watch: and is looked at no more (" + std::to_string(looks.load()) + " looks)");
+    }
+    {
+        std::atomic<int> looks{0};
+        const auto t0 = std::chrono::steady_clock::now();
+        {
+            ClientWatch w(
+                [&] {
+                    ++looks;
+                    return true;
+                },
+                1000ms);
+        }
+        const auto took = std::chrono::steady_clock::now() - t0;
+        check(took < 500ms && looks == 0, "client watch: its end does not wait for the next look");
     }
 }
 
@@ -3099,6 +3193,7 @@ int main() {
     download_tests();
     event_bus_tests();
     keepalive_tests();
+    client_watch_tests();
     url_entry_tests();
     model_delete_tests();
     model_folders_tests();

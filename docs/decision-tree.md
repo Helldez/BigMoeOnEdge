@@ -297,6 +297,8 @@ flowchart TD
     srv_request_budget["<b>srv.request.budget</b><br/>A request's answer budget"]
     srv_request_think["<b>srv.request.think</b><br/>A chat request's thinking switch"]
     srv_request_sampling["<b>srv.request.sampling</b><br/>A request's own sampling, when it sends any"]
+    srv_stream_closed["<b>srv.stream.closed</b><br/>A streamed turn's connection reads closed: a keep-alive at once"]
+    srv_watch_closed["<b>srv.watch.closed</b><br/>A turn without a stream: its connection reads closed, its stop goes up"]
     srv_layers -->|"API requests"| srv_api_think
     srv_load_auto -->|"planning"| srv_load_projector
     srv_load_auto -->|"planned"| srv_load_plan_ok
@@ -318,6 +320,8 @@ flowchart TD
     srv_chat_error -.-> srv_request_budget
     srv_request_budget -.-> srv_request_think
     srv_request_think -.-> srv_request_sampling
+    srv_request_sampling -.-> srv_stream_closed
+    srv_stream_closed -.-> srv_watch_closed
 ```
 <!-- /dt:graph -->
 
@@ -505,6 +509,28 @@ flowchart TD
 - condition: `if (any) turn.sampling = r;`
 - Only a request that sends a sampling field gets an override. The session applies it in
   `req.sampler`, and ignores it while speculation is configured.
+
+#### `srv.stream.closed` — A streamed turn's connection reads closed: a keep-alive at once
+- parent: —
+- code: `server/stream_keepalive.h` · `StreamKeepalive::run`
+- condition: `if (closed_()) {`
+- Looked at once a second, until it has read closed `kProbes` times.
+- Reads closed (an end of stream or an error) → the keep-alive goes out now. A client that left
+  resets the first, so the second fails, and a failed write raises the turn's own stop: the engine
+  ends the turn at its next cancellation point, inside a prefill too. A client that only closed its
+  sending side reads them, and its turn runs on.
+- Reads open → nothing: the keep-alive waits for its interval of silence.
+
+#### `srv.watch.closed` — A turn without a stream: its connection reads closed, its stop goes up
+- parent: —
+- code: `server/client_watch.h` · `ClientWatch::run`
+- condition: `if (closed_()) {`
+- Looked at once a second, from the turn's wait in line to its end, until it reads closed.
+- Reads closed (an end of stream or an error) → the turn's own stop goes up: the engine ends the
+  turn at its next cancellation point, inside a prefill too, and the request is answered
+  `499 client_gone`. A client that only closed its sending side reads closed as well and counts as
+  gone: before the answer nothing is written that could tell the two apart.
+- Reads open → looked at again a second later.
 
 ## plan — the hardware planner (`--auto`)
 

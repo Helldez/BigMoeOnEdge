@@ -154,9 +154,11 @@ public:
 
     // Run one chat turn on the calling thread, after any turn that asked first (turn_queue.h).
     // `on_token` (nullable) sees every token and returns false once the client that asked for this
-    // turn is gone: the host then cancels this turn, and only this one. A front-end never cancels on
-    // a failed write itself, since it cannot tell whose turn is running when the write fails (a
-    // keep-alive while queued, the last frames after the turn ended). `still_wanted` (nullable) is
+    // turn is gone: the host then cancels this turn, and only this one. A front-end never cancels the
+    // session itself when it finds its client gone (a write that fails, a connection that reads
+    // closed), since it cannot tell whose turn is running then (a keep-alive while queued, the last
+    // frames after the turn ended); it raises its own `stop` instead, which is read only while its
+    // own turn runs. `still_wanted` (nullable) is
     // asked while the turn waits its place and gives it up by returning false. It may write a
     // keepalive, so it is never called concurrently with on_token. `stop` (nullable) is the caller's
     // atomic flag, borrowed until return and forwarded to the engine's cancellation points,
