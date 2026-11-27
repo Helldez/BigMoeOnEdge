@@ -30,6 +30,8 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   its decode is timed one load runs with the lookup inside the device's graph and times it, and the faster
   side serves from then on (`--trial-host-call`, `host_call_tps` in the measured knobs). Measured +5% on a
   12 GB CUDA card, slower on a unified-memory laptop, where the next load turns it off again.
+  With `--device-cache-cpu-threads`, a prompt whose experts' output is wider than the backend's host call
+  keeps the CPU part as a split: before, a CUDA server crashed on the first long prompt.
 
 - **Layers that share expert tensors share the device cache.** A looped model runs the same blocks more than
   once per token; the cache counted their experts once per run and two runs fought over one mapping, so the
