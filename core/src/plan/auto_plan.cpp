@@ -243,12 +243,7 @@ Plan give_way(
 }
 
 Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
-    Plan p = give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model));
-    // A device expert cache starts filled with what this model decoded most often, where a record says
-    // it: a miss costs an upload there, and in a short session every miss is an expert never seen yet.
-    // dt:plan.cache-warm
-    if (p.config.moe.device_cache_mb > 0 && facts.hottest) p.config.moe.device_cache_warm = facts.hottest;
-    return p;
+    return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model));
 }
 
 } // namespace
@@ -352,10 +347,6 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     r.backends = fitter_devices;
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
-    if (opt.routing) {
-        std::vector<uint32_t> hot = hottest_experts(*opt.routing);
-        if (!hot.empty()) r.hottest = std::make_shared<const std::vector<uint32_t>>(std::move(hot));
-    }
     r.plan = plan_on_facts(r, cfg, req, r.model);
     took();
     return r;

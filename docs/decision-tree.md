@@ -543,7 +543,6 @@ flowchart TD
     plan_backends["<b>plan.backends</b><br/>One backend per card"]
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
-    plan_cache_warm["<b>plan.cache-warm</b><br/>What a device expert cache is filled with at load [EXPERIMENTAL]"]
     plan_host_call["<b>plan.host-call</b><br/>A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
@@ -608,8 +607,7 @@ flowchart TD
     plan_prior_curve -.-> plan_backends
     plan_backends -.-> plan_held_whole
     plan_held_whole -.-> plan_shared_cache
-    plan_shared_cache -.-> plan_cache_warm
-    plan_cache_warm -.-> plan_host_call
+    plan_shared_cache -.-> plan_host_call
     plan_host_call -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
@@ -780,14 +778,6 @@ flowchart TD
   the storage's best lanes, `device_cache_read_ahead` = the model's top-k, `trial.device_tier = 1`,
   `trial.answer_device` unless confirmed, `fallback` = the streaming plan.
 - Otherwise the stream stays, timed as it serves (`trial.device_tier = 0`).
-
-#### `plan.cache-warm` — What a device expert cache is filled with at load [EXPERIMENTAL]
-- parent: —
-- code: `core/src/plan/auto_plan.cpp` · `plan_on_facts`
-- condition: `if (p.config.moe.device_cache_mb > 0 && facts.hottest) p.config.moe.device_cache_warm = facts.hottest;`
-- With a routing record of the model (`AutoPlanOptions::routing`), the plan hands any device expert
-  cache it arms the record's decoded experts, the most often first (`hottest_experts`):
-  `device_cache_warm`, which `open.cache-warm` fills the cache with.
 
 #### `plan.host-call` — A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]
 - parent: —
@@ -1203,7 +1193,6 @@ flowchart TD
     open_ctx_ubatch_halve["<b>open.ctx.ubatch-halve</b><br/>Still no context: halve the graph width"]
     open_ctx_mtp["<b>open.ctx.mtp</b><br/>The MTP draft context"]
     open_answer_check["<b>open.answer-check</b><br/>Compare the device's answers with the cores'"]
-    open_cache_warm["<b>open.cache-warm</b><br/>A device expert cache filled at load from the model's routing record [EXPERIMENTAL]"]
     open_answer_check_cache["<b>open.answer-check-cache</b><br/>The same comparison, once a device expert cache is armed"]
     open_answer_verdict["<b>open.answer.verdict</b><br/>Confirmed, differs, or could not compare"]
     open_answer_weigh["<b>open.answer.weigh</b><br/>Confirmed, but are the cores faster for this model's requests?"]
@@ -1285,8 +1274,7 @@ flowchart TD
     open_ctx_op_offload -.-> open_ctx_cache_shrink
     open_ctx_cache_shrink -.-> open_ctx_mtp
     open_ctx_mtp -.-> open_answer_check
-    open_answer_check -.-> open_cache_warm
-    open_cache_warm -.-> open_answer_check_cache
+    open_answer_check -.-> open_answer_check_cache
     open_answer_check_cache -.-> open_sampler
     open_sampler -.-> open_spec
     open_spec -.-> open_stream
@@ -1496,13 +1484,6 @@ flowchart TD
   reference copy is loaded on the cores. A probe text is decoded on both, row by row, then once
   wide.
 - Not confirmed → this opening ends (`open.reopen`).
-
-#### `open.cache-warm` — A device expert cache filled at load from the model's routing record [EXPERIMENTAL]
-- parent: —
-- code: `core/src/engine/session.cpp` · `Session::open_placed`
-- condition: `if (cfg.moe.device_cache_mb > 0 && cfg.moe.device_cache_warm && !cfg.moe.device_cache_warm->empty()) {`
-- Right after the cache is armed, its free slots take the experts the record decoded most often
-  (`llama_moe_cache_warm`), the hottest first, until the cache is full; nothing cached is evicted.
 
 #### `open.answer-check-cache` — The same comparison, once a device expert cache is armed
 - parent: —

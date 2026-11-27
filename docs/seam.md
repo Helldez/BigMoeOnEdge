@@ -157,14 +157,12 @@ on its own branch so the default pin can return to the hook branch unchanged.
 - **`GGML_OP_HOST_CALL`**: a host function answered inside a graph (CPU inline, CUDA through a
   mapped mailbox inside a captured graph, Metal through a shared event between graph segments).
   The MoE cache's lookup can run as one, so a token is one graph instead of a split per layer.
-- **MoE cache**: `llama_set_moe_cache_fill` (misses written in place by a caller),
-  `llama_moe_cache_warm` (free slots filled with given experts at load), and
+- **MoE cache**: `llama_set_moe_cache_fill` (misses written in place by a caller), and
   `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`,
   `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the background).
 
 bmoe drives them through `RunConfig::moe.device_cache_fill_lanes`, `device_cache_host_call`,
-`device_cache_cpu_threads`, `device_cache_read_ahead`, `device_cache_async_admit` and
-`device_cache_warm` (from the routing record, `hottest_experts`), and fills misses from the file with
+`device_cache_cpu_threads`, `device_cache_read_ahead` and `device_cache_async_admit`, and fills misses from the file with
 `core/src/moe/cache_fill.cpp`. Sunset: dropped with the branch if the levers do not earn a place.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)

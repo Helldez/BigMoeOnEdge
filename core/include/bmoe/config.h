@@ -136,11 +136,6 @@ struct MoeStreamConfig {
     // - read-ahead: the next layer's router, applied to this layer's input, names this many experts
     //   per token that are filled while this layer computes. 0 is off.
     int device_cache_read_ahead = 0;
-    // - warm: the experts the cache is filled with when it is armed, hottest first, as
-    //   (layer << 16) | expert: what the model's own routing record decoded most often
-    //   (bmoe/routing.h, hottest_experts). Set by the plan from that record, never a parameter;
-    //   empty, the cache starts empty and fills on its misses.
-    std::shared_ptr<const std::vector<uint32_t>> device_cache_warm;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the

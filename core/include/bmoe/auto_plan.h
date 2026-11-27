@@ -91,9 +91,6 @@ struct AutoPlan {
     // the rules on again.
     Placement placement;
     std::vector<std::string> backends;
-    // The experts the model's routing record decoded most often (hottest_experts), what a device
-    // expert cache the plan arms is filled with when armed; empty without a record.
-    std::shared_ptr<const std::vector<uint32_t>> hottest;
 
     // What a re-fit answers from besides the facts' own file, devices and backends: the graph's width,
     // the context, the KV cache's types and the draft context the fit makes room for.

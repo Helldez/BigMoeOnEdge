@@ -17,26 +17,6 @@
 
 namespace bmoe {
 
-std::vector<uint32_t> hottest_experts(const RoutingTrace & trace) {
-    if (trace.n_expert == 0 || trace.n_expert > 0xffff || trace.n_layer > 0xffff) return {};
-    const bool decoded =
-        std::any_of(trace.batches.begin(), trace.batches.end(), [](const RoutingBatch & b) { return b.decode; });
-    std::vector<uint64_t> count((size_t) trace.n_layer * trace.n_expert, 0);
-    for (const RoutingBatch & b : trace.batches) {
-        if ((decoded && !b.decode) || b.layer >= trace.n_layer) continue;
-        for (const int32_t e : b.experts)
-            if (e >= 0 && (uint32_t) e < trace.n_expert) ++count[(size_t) b.layer * trace.n_expert + (size_t) e];
-    }
-    std::vector<uint32_t> keys;
-    for (size_t i = 0; i < count.size(); ++i)
-        if (count[i] > 0) keys.push_back((uint32_t) ((i / trace.n_expert) << 16 | (i % trace.n_expert)));
-    std::stable_sort(keys.begin(), keys.end(), [&](uint32_t a, uint32_t b) {
-        return count[(size_t) (a >> 16) * trace.n_expert + (a & 0xffff)] >
-               count[(size_t) (b >> 16) * trace.n_expert + (b & 0xffff)];
-    });
-    return keys;
-}
-
 uint64_t RoutingTrace::expert_set_bytes() const {
     std::vector<bool> seen(expert_bytes.size(), false);
     uint64_t total = 0;

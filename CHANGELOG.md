@@ -39,16 +39,12 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   of its own, only if it is used more than the expert it evicts (decayed use count): no layer waits for an
   upload, and a miss used once no longer pushes out what keeps being used. On a 12 GB PCIe 3 card with
   Qwen3.6-35B UD-Q4_K_XL: 52.2 -> 58.6 tok/s over 256 tokens, 48.3 -> 53.8 over 1024. The processor's
-  experts round differently from the device's, so the text is not the plain upload's. Off by default.
+  experts round differently from the device's, so the text is not the plain upload's. Off by default: on a
+  24 GB card where the cache already serves 97% of Flash-Next Q2_0's experts it was slower (68.8 vs 77.8).
 - **CUDA: a host call copies its mailbox 16 bytes per access.** The device read the host's reply a byte at
   a time over the bus; a layer's CPU-miss output (64 KiB at 8 experts) cost more than computing the misses
   saved, which is why every CPU share measured with the host call was slower. It now reads and writes the
   mailbox in 16-byte accesses where both ends allow it.
-- **A device expert cache filled at load from the model's routing record.** Where `--auto` arms a device
-  cache and a record names the experts this model decoded most often, the free slots are filled with them,
-  hottest first, before the first token (0.6 s for 3412 experts on a 12 GB card). Nothing is evicted.
-  Measured: no gain where the cache is small against the experts a prompt uses (it turns over three times in
-  256 tokens on a 12 GB card); a device-cache run writes no record unless `--record-unstreamed` asks.
 
 - **CUDA: a short row of a float matrix-vector product is one warp's.** Where a row fits a few warp loads,
   each row gets one warp and a block several rows, instead of one block per row and a block-wide

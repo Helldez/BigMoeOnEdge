@@ -3043,18 +3043,6 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     // dt:open.host-buffer
     if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
-    // The cache starts filled with what this model decoded most often, from its own routing record
-    // (MoeStreamConfig::device_cache_warm): the experts a short session would otherwise upload on
-    // their first touch. Nothing is evicted, so the slots past the record's experts stay free.
-    // dt:open.cache-warm
-    if (cfg.moe.device_cache_mb > 0 && cfg.moe.device_cache_warm && !cfg.moe.device_cache_warm->empty()) {
-        const auto t0 = clock_t_::now();
-        const std::vector<uint32_t> & hot = *cfg.moe.device_cache_warm;
-        const size_t n = llama_moe_cache_warm(im.ctx.get(), hot.data(), hot.size());
-        log_printf(LogLevel::Info,
-                   "device expert cache: %zu of the %zu experts this model decoded most often filled at load, %.2f s",
-                   n, hot.size(), std::chrono::duration<double>(clock_t_::now() - t0).count());
-    }
     // dt:open.answer-check-cache
     if (check && !cfg.trial.answer_device.empty() && check_after_cache) {
         if (!run_answer_check()) return nullptr;
