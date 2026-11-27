@@ -590,11 +590,11 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("device-cache-async-admit", "Device cache admits in the background", G::Cache,
-                          L::Experimental,
-                          "With --device-cache-host-call and --device-cache-cpu-threads, every miss of a "
-                          "decoded token is computed by the processor, and a miss enters the device cache "
-                          "in the background only if it is used more than the expert it evicts.");
+        ParamDesc d =
+            row("device-cache-async-admit", "Device cache admits in the background", G::Cache, L::Experimental,
+                "With --device-cache-host-call and --device-cache-cpu-threads, every miss of a "
+                "decoded token is computed by the processor, and a miss enters the device cache "
+                "in the background only if it is used more than the expert it evicts.");
         d.type = ParamType::Bool;
         d.flag.clear();
         d.switches = {{"--device-cache-async-admit", "true"}, {"--no-device-cache-async-admit", "false"}};
