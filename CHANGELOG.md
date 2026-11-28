@@ -11,6 +11,13 @@ branch (`bmoe/moe-cache-exp-2611`, and `bmoe/lossless-cache-2811` on top of it, 
 it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
 
 ### Added
+- **What a prompt's expert copies cost, in the log** (fork branch `bmoe/wide-read-2811`, `bmoe/wide-read-warm-2811` over the warm). A pass wider
+  than the device cache serves already copies the experts the cache holds from its banks and uploads only
+  the others. Still, on a rented 32 GB card with Qwen3.8-Flash-Next, the cache's side prefilled a
+  4612-token prompt at 2412 tok/s against 4138-4167 with the fitter's placement. The freed context now
+  logs the expert weights copied, the ids reads and their wait on the device, the uploads (calls and MiB),
+  the copies from the cache and the host time, on either side. This is diagnostics for the next card run;
+  no output changes ([seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)).
 - **Draft models** (`--drafter --drafter-file FILE`, from #534, carried here until it lands): a third draft source for speculative
   decoding, beside the model's own head (`--mtp`) and the n-gram lookup (`--ngram`).
   - **What it is:** a small network trained for one model and shipped in a GGUF of its own, which

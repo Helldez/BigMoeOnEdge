@@ -146,7 +146,9 @@ refill a weight buffer between graphs, this commit is dropped at the next bump.
 An experimental branch of the fork, `bmoe/moe-cache-exp-2611` of `Helldez/llama.cpp` (and `bmoe/lossless-cache-2811`
 on top of it, for the cache lent to a prompt and the read-ahead of verify batches, and
 `bmoe/footprint-cut-2811` on that, which moves the host-writable memory out of ggml's interfaces, and
-`bmoe/cache-warm-2811` on `bmoe/lossless-cache-2811`, for the cache warmed at load), adds one commit
+`bmoe/cache-warm-2811` on `bmoe/lossless-cache-2811`, for the cache warmed at load, and
+`bmoe/wide-read-2811` on `bmoe/lossless-cache-2811` (`bmoe/wide-read-warm-2811` over the warm), which counts what a
+large batch's expert copies cost), adds one commit
 on top of the pinned branch (hook + Hexagon fix). It is not proposed upstream and it touches
 llama.cpp more than this project's rule allows (hard rule 1 asks for a single small commit); it lives
 on its own branch so the default pin can return to the hook branch unchanged.
@@ -168,6 +170,13 @@ on its own branch so the default pin can return to the hook branch unchanged.
   (for every batch the cache serves, predicted and filled ahead only where the host writes the cache in
   place: elsewhere no prediction is built) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch; where the
   host does not write that memory in place the misses are uploaded into it on the backend's queue).
+- **What a large batch's expert copies cost** (`bmoe/wide-read-2811`, diagnostics only): a pass wider than
+  the cache serves builds with the host's expert tensors, and the copy callback reads the pass's ids once per
+  layer, copies the experts the cache holds from its banks and uploads the others. When the context is freed,
+  llama.cpp logs the expert weights copied, the ids reads and the time they waited on the device, the uploads
+  (calls and MiB), the copies from the cache and the callback's host time
+  (`llama_context: large batches: ...`), with or without a cache, so the cache's side and the fitter's
+  placement compare on the same line.
 - **Compute buffer room for a lent cache**: `ggml_gallocr_set_min_buffer_size` /
   `ggml_backend_sched_set_min_buffer_size` (a buffer reserved larger than its graphs need),
   `ggml_gallocr_get_buffer` / `ggml_backend_sched_get_buffer`, and `ggml_backend_buffer_alias` (a
