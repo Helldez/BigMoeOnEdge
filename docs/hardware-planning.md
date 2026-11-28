@@ -1382,8 +1382,8 @@ buffers instead took the memory from the cache: the same prefill, the decode 10%
 lending on this side; the mechanism itself serves any device, the misses written in place where the host
 writes the device's memory and uploaded on the backend's queue elsewhere (gate G25g runs it on a device
 of the second kind, G25h on one of the first where the build has one: misses filled in place, read ahead
-in the background, the last layer looked up by a host call, every background fill held back so that a
-lookup that reads a slot before its fill lands fails the gate).
+in the background, every background fill held back so that a lookup that reads a slot before its fill
+lands fails the gate).
 
 ### A model held in memory, on a device that shares it
 
