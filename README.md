@@ -68,8 +68,8 @@ quantization. Speeds by machine and release: [Performance](#performance).
 |---|---|---|---|---|---|
 | Engine and CLI | arm64 | arm64 (in the app) | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
 | App | native app (APK) | native app, TestFlight beta | desktop app (`.dmg`) | desktop app (installer) | desktop app (AppImage) |
-| Accelerators | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL and Hexagon NPU on arm64 | CUDA, HIP, Vulkan |
-| Run on | a 12 GB phone | 12 GB iPhones | a 16 GB laptop | a 16 GB laptop; NVIDIA laptops and desktops in field reports | rented NVIDIA cards from 8 to 32 GB, a 192 GB AMD card |
+| Accelerators | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL and Hexagon NPU on arm64 | CUDA, HIP (AMD ROCm), Vulkan |
+| Run on | a 12 GB phone | 12 GB iPhones | a 16 GB laptop | a 16 GB laptop; NVIDIA laptops and desktops in field reports | rented NVIDIA cards from 8 to 96 GB, a 192 GB AMD card (ROCm) |
 
 What is measured, shipped or still owed on each: [docs/platforms.md](docs/platforms.md).
 

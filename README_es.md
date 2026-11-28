@@ -71,8 +71,8 @@ GGUF, con cualquier cuantización. Velocidades por máquina y versión: [Rendimi
 |---|---|---|---|---|---|
 | Motor y CLI | arm64 | arm64 (dentro de la app) | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
 | App | app nativa (APK) | app nativa, beta en TestFlight | app de escritorio (`.dmg`) | app de escritorio (instalador) | app de escritorio (AppImage) |
-| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL y Hexagon NPU en arm64 | CUDA, HIP, Vulkan |
-| Probado en | un teléfono de 12 GB | iPhone de 12 GB | un portátil de 16 GB | un portátil de 16 GB; portátiles y equipos de escritorio NVIDIA en informes de usuarios | tarjetas NVIDIA alquiladas de 8 a 32 GB, una tarjeta AMD de 192 GB |
+| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL y Hexagon NPU en arm64 | CUDA, HIP (AMD ROCm), Vulkan |
+| Probado en | un teléfono de 12 GB | iPhone de 12 GB | un portátil de 16 GB | un portátil de 16 GB; portátiles y equipos de escritorio NVIDIA en informes de usuarios | tarjetas NVIDIA alquiladas de 8 a 96 GB, una tarjeta AMD de 192 GB (ROCm) |
 
 Qué está medido, publicado o aún pendiente en cada una: [docs/platforms.md](docs/platforms.md).
 

@@ -73,8 +73,8 @@ fonctionne, quelle que soit sa quantification. Vitesses par machine et par versi
 |---|---|---|---|---|---|
 | Moteur et CLI | arm64 | arm64 (dans l'application) | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
 | Application | application native (APK) | application native, bêta TestFlight | application de bureau (`.dmg`) | application de bureau (installateur) | application de bureau (AppImage) |
-| Accélérateurs | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan ; OpenCL et Hexagon NPU sur arm64 | CUDA, HIP, Vulkan |
-| Testé sur | un téléphone de 12 GB | des iPhone de 12 GB | un portable de 16 GB | un portable de 16 GB ; des portables et ordinateurs de bureau NVIDIA dans les rapports d'utilisateurs | des cartes NVIDIA louées de 8 à 32 GB, une carte AMD de 192 GB |
+| Accélérateurs | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan ; OpenCL et Hexagon NPU sur arm64 | CUDA, HIP (AMD ROCm), Vulkan |
+| Testé sur | un téléphone de 12 GB | des iPhone de 12 GB | un portable de 16 GB | un portable de 16 GB ; des portables et ordinateurs de bureau NVIDIA dans les rapports d'utilisateurs | des cartes NVIDIA louées de 8 à 96 GB, une carte AMD de 192 GB (ROCm) |
 
 Ce qui est mesuré, livré ou encore dû sur chacune : [docs/platforms.md](docs/platforms.md).
 

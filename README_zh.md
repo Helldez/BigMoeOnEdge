@@ -60,8 +60,8 @@ Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型�
 |---|---|---|---|---|---|
 | 引擎与 CLI | arm64 | arm64（内置于应用中） | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
 | 应用 | 原生应用（APK） | 原生应用，TestFlight 测试版 | 桌面应用（`.dmg`） | 桌面应用（安装程序） | 桌面应用（AppImage） |
-| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan；arm64 上还有 OpenCL 和 Hexagon NPU | CUDA, HIP, Vulkan |
-| 运行设备 | 一台 12 GB 手机 | 12 GB iPhone | 一台 16 GB 笔记本 | 一台 16 GB 笔记本；用户反馈中的 NVIDIA 笔记本和台式机 | 租用的 8 到 32 GB NVIDIA 显卡，一块 192 GB AMD 显卡 |
+| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan；arm64 上还有 OpenCL 和 Hexagon NPU | CUDA, HIP (AMD ROCm), Vulkan |
+| 运行设备 | 一台 12 GB 手机 | 12 GB iPhone | 一台 16 GB 笔记本 | 一台 16 GB 笔记本；用户反馈中的 NVIDIA 笔记本和台式机 | 租用的 8 到 96 GB NVIDIA 显卡，一块 192 GB AMD 显卡（ROCm） |
 
 各平台已实测、已发布和仍待完成的内容：[docs/platforms.md](docs/platforms.md)。
 

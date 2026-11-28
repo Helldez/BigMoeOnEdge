@@ -60,8 +60,8 @@ Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモ�
 |---|---|---|---|---|---|
 | エンジンと CLI | arm64 | arm64（アプリ内） | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
 | アプリ | ネイティブアプリ（APK） | ネイティブアプリ、TestFlight ベータ | デスクトップアプリ（`.dmg`） | デスクトップアプリ（インストーラー） | デスクトップアプリ（AppImage） |
-| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan。arm64 では OpenCL と Hexagon NPU | CUDA, HIP, Vulkan |
-| 実行環境 | 12 GB スマートフォン | 12 GB iPhone | 16 GB ノート PC | 16 GB ノート PC。フィールドレポートでは NVIDIA のノート PC とデスクトップ | レンタルした 8〜32 GB の NVIDIA カード、192 GB の AMD カード |
+| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan。arm64 では OpenCL と Hexagon NPU | CUDA, HIP (AMD ROCm), Vulkan |
+| 実行環境 | 12 GB スマートフォン | 12 GB iPhone | 16 GB ノート PC | 16 GB ノート PC。フィールドレポートでは NVIDIA のノート PC とデスクトップ | レンタルした 8〜96 GB の NVIDIA カード、192 GB の AMD カード（ROCm） |
 
 それぞれで計測済みのもの、提供済みのもの、まだ残っているもの：[docs/platforms.md](docs/platforms.md)。
 

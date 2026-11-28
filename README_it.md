@@ -71,8 +71,8 @@ in GGUF, in qualsiasi quantizzazione. Velocità per macchina e release: [Prestaz
 |---|---|---|---|---|---|
 | Motore e CLI | arm64 | arm64 (nell'app) | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
 | App | app nativa (APK) | app nativa, beta TestFlight | app desktop (`.dmg`) | app desktop (installer) | app desktop (AppImage) |
-| Acceleratori | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL e Hexagon NPU su arm64 | CUDA, HIP, Vulkan |
-| Provato su | un telefono da 12 GB | iPhone da 12 GB | un portatile da 16 GB | un portatile da 16 GB; portatili e desktop NVIDIA nelle segnalazioni degli utenti | schede NVIDIA a noleggio da 8 a 32 GB, una scheda AMD da 192 GB |
+| Acceleratori | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL e Hexagon NPU su arm64 | CUDA, HIP (AMD ROCm), Vulkan |
+| Provato su | un telefono da 12 GB | iPhone da 12 GB | un portatile da 16 GB | un portatile da 16 GB; portatili e desktop NVIDIA nelle segnalazioni degli utenti | schede NVIDIA a noleggio da 8 a 96 GB, una scheda AMD da 192 GB (ROCm) |
 
 Cosa è misurato, distribuito o ancora da fare su ciascuna: [docs/platforms.md](docs/platforms.md).
 
