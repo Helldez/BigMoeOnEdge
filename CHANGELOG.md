@@ -151,8 +151,8 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   misses, the draft's own pass, and the tokens a verify yields at the acceptance its load measured
   (`spec_accept`, `drafter_accept`, new in the record) or a prior of 60%. It arms the faster width, does
   not time a draft priced inside the margin over none, and lets a measured rate override the price.
-  Without a record there is no price, and the coarse bound and the loads decide, as before (a design choice
-  pending review). A side that streams nothing now records its routing where the model has no record yet
+  Without a record there is no price, and the coarse bound and the loads decide, as before, on the loads
+  the person makes anyway. A side that streams nothing now records its routing where the model has no record yet
   (`record-unstreamed`, set by the plan; its documentation already said so, and no rule did): a model served
   from a device cache on every load, like Flash-Next on the laptop, never got one, and was never priced.
   It records only on a load that times nothing, so no measured rate carries the recording's barriers. The pairing

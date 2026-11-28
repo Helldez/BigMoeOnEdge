@@ -1474,8 +1474,8 @@ draft priced inside the margin over none is not timed at all. A measured rate ov
 record, no price:** the union is set by how consecutive tokens' routing overlaps, which only a record
 says, and a bound from the model alone (positions routed independently) put a verify of 4 at nearly 4
 tokens' bytes and priced out drafts measured to pay. There the coarse bound decides (`verify_reads_held`)
-and the loads time it. *This is a design choice pending review: the alternative is a bound from the
-model alone, which prices drafting out where it was measured to pay.*
+and the loads time it. The trial rides the loads the person makes anyway, one side a load, so going
+without a price costs no model load of its own.
 
 **A side that streams nothing records its routing.** Only the streamer observes the routing by itself, so
 a model served from a device expert cache, or held whole, never got a record: Flash-Next on the 16 GB
