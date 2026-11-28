@@ -820,6 +820,8 @@ flowchart TD
   records and the model has no record of its own (`hit_curve.measured` false) → `record_unstreamed`
   on: one barrier per MoE layer per token until the record is full. The next plan prices the cache
   and the drafts (`plan.spec`) on it. A pinned `record-unstreamed` is kept.
+- Only on a load that times nothing (no trial of any kind and no answer check): a rate measured beside
+  the barriers would carry them. Until then the loads that time a side decide unpriced.
 
 #### `plan.host-call` — A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]
 - parent: —

@@ -5438,18 +5438,35 @@ int main() {
               "draft price, no record: unpriced, the coarse bound passes and the load times it at the plan's width",
               find(nr, "spec") ? find(nr, "spec")->reason : std::string());
         // That side streams nothing, so nothing records the routing by itself: without a record of its own
-        // the load records it unstreamed, for the next plan to price on; with one, it does not.
-        const Decision * rec = find(nr, "record-unstreamed");
-        check(nr.config.moe.record_unstreamed && rec && rec->value == "on",
-              "routing record: a device-cache side with no record records unstreamed");
-        ModelProfile recorded = no_record;
+        // a load records it unstreamed, for the next plan to price on - but only a load that times nothing,
+        // so no measured rate carries the recording's barriers. This one times the draft model: no record.
+        check(!nr.config.moe.record_unstreamed && !find(nr, "record-unstreamed"),
+              "routing record: skipped on a load that times a side");
+        // Every side measured: the first quiet load records.
+        ModelProfile quiet = no_record;
+        quiet.knobs.drafter_tps = 112.0;
+        quiet.knobs.drafter_accept = 0.65;
+        quiet.knobs.drafter_draft = pol.draft_tokens;
+        quiet.knobs.no_spec_tps = 66.0;
+        quiet.knobs.threads = long_ctx.n_threads; // the thread count's trial settled too
+        quiet.knobs.threads_tried = {long_ctx.n_threads, long_ctx.n_threads / 2};
+        quiet.knobs.rounds = 2;
+        const Plan qp = plan_with(quiet);
+        const Decision * rec = find(qp, "record-unstreamed");
+        check(!qp.config.trial.enabled() && qp.config.trial.answer_device.empty() && qp.config.moe.record_unstreamed &&
+                  rec && rec->value == "on",
+              "routing record: armed on the first load that times nothing",
+              std::string("trial pending: ") + (qp.config.trial.enabled() ? "yes" : "no") + ", spec side " +
+                  std::to_string(qp.config.trial.spec_side) + ", threads " +
+                  std::to_string(qp.config.trial.threads.size()));
+        ModelProfile recorded = quiet;
         recorded.hit_curve.measured = true;
         recorded.hit_curve.points = {{0, 0.0}, {64 * MiB, 0.9}};
         const Plan rp = plan_with(recorded);
         check(!rp.config.moe.record_unstreamed && !find(rp, "record-unstreamed"),
               "routing record: a model with its own record records nothing more");
         PlanRequest no_keep;
-        const Plan nk = plan_run(long_ctx, uma, no_record, pl, no_keep, pol);
+        const Plan nk = plan_run(long_ctx, uma, quiet, pl, no_keep, pol);
         check(!nk.config.moe.record_unstreamed, "routing record: a front-end that keeps no records records nothing");
     }
 

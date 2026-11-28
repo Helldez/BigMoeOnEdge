@@ -1482,8 +1482,9 @@ a model served from a device expert cache, or held whole, never got a record: Fl
 laptop ran from the device cache on every load, and its drafts were never priced. Where the front-end
 keeps records and the model has none of its own, such a load records unstreamed
 (`choose_record_unstreamed`, `record-unstreamed`): one barrier per MoE layer per token until the
-record's 256 tokens are in, then nothing. The next plan prices on it. The load that records pays those
-barriers during its first tokens, which a side it times on the same load also sees.
+record's 256 tokens are in, then nothing. The next plan prices on it. It records only on a load that
+times nothing, so no measured rate carries those barriers: until then the loads that time a side decide
+unpriced, and the record comes with the first load that times none.
 
 Then, one side a load:
 - **A draft not timed:** the load arms it and times its decode: the head first (`--trial-spec 1`),

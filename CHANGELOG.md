@@ -154,7 +154,8 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   Without a record there is no price, and the coarse bound and the loads decide, as before (a design choice
   pending review). A side that streams nothing now records its routing where the model has no record yet
   (`record-unstreamed`, set by the plan; its documentation already said so, and no rule did): a model served
-  from a device cache on every load, like Flash-Next on the laptop, never got one, and was never priced. The pairing
+  from a device cache on every load, like Flash-Next on the laptop, never got one, and was never priced.
+  It records only on a load that times nothing, so no measured rate carries the recording's barriers. The pairing
   rule changed too: a drafter's `general.name` is whatever its conversion wrote (`Qwendflash` beside
   `Qwen3.6 35B A3B`), so the server pairs by vocabulary, hidden width and target layers.
 - **A draft's bytes are charged on a card before its device expert cache is sized.** On a rented 24 GB card,

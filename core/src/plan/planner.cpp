@@ -4239,7 +4239,9 @@ void apply_measured_threads(Planning & s, int would_have) {
     std::vector<int> others;
     for (int n : mk.threads_tried)
         if (n != mk.threads) others.push_back(n);
-    const bool held = !mk.threads_tried.empty() && mk.threads_tried.front() == mk.threads;
+    // A record that names no incumbent tried (an older or hand-written one) has no other count to have
+    // been beaten by: the count held.
+    const bool held = mk.threads_tried.empty() || mk.threads_tried.front() == mk.threads;
     const std::string n = u64s((uint64_t) mk.threads);
     s.note("threads", n, Source::Measured,
            n + " threads: measured on this model, the fastest decode " +
@@ -5137,11 +5139,15 @@ void choose_spec(Plan & p,
 // curve and its drafts were never priced (Flash-Next on a 16 GB laptop, served from the device cache on
 // every load). Where the front-end keeps records and this model has none of its own, the run records
 // unstreamed: one barrier per MoE layer per token until the record is full, and nothing after; lossless.
+// Only on a load that times nothing: a rate measured beside those barriers would carry them into the
+// decision it settles. Until then the loads that time a side decide unpriced, and the record comes with
+// the first load that times none.
 void choose_record_unstreamed(Plan & p, const ModelProfile & m, const PlanRequest & req) {
     RunConfig & c = p.config;
     // dt:plan.record-unstreamed
     if (!req.measure_knobs || !m.is_moe || c.moe.enabled || c.moe.routing_record_tokens <= 0) return;
     if (m.hit_curve.measured || req.is_pinned("record-unstreamed") || c.moe.record_unstreamed) return;
+    if (c.trial.enabled() || !c.trial.answer_device.empty()) return; // this load times a side
     for (const Decision & x : p.decisions)
         if (x.knob == "record-unstreamed") return; // a plan made again from this one already asked
     c.moe.record_unstreamed = true;
