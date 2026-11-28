@@ -823,6 +823,8 @@ flowchart TD
   - no expert layer is left on the host;
   - the budget is under one token cycle;
   - no device runs the expert op correctly.
+- A draft typed for the run (`spec`) is charged before the budget (`draft_device_bytes`: its weights, KV
+  and compute at its width), since it opens on the device after the fitter's placement.
 
 #### `plan.tier.rates` — The device must read experts faster than the host
 - parent: `plan.tier`
@@ -1156,14 +1158,16 @@ flowchart TD
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_spec`
 - condition: `if (source == DraftSource::none || !req.measure_knobs) return;`
-- condition: `if (!verify_reads_held(c, m, draft, where)) return;`
+- condition: `if (!verify_reads_held(sized, m, draft, where)) return;`
 - Asked by `plan_run` on the plan as it will serve, after `plan.host-call`. The model has a draft
   (`draft_source`: its own MTP head; a drafter's file, `ModelProfile::draft_file_bytes`, once this
   engine opens one), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are not
   pinned, no draft is armed, and this load times no other side and checks no device's answers.
   Otherwise → nothing.
 - `verify_reads_held`: the model held whole, or a device expert cache of at least `1 + draft` token
-  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → nothing.
+  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → nothing. On a device with
+  memory of its own the cache first gives the draft its bytes (`draft_device_bytes`), and the rest has
+  to hold the verify.
 - The width is `PlannerPolicy::draft_tokens` (3), or a typed `--draft`.
 - An armed draft that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
   says why.

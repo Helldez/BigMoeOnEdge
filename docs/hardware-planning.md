@@ -1464,8 +1464,27 @@ the other side; twice, and the draft is off for that model on that machine. The 
 them. Only one decision is timed per load: a load that times the shared-memory device, the device
 cache, its host call or the graph width, or checks the device's answers, leaves the draft for a later
 load. On the device-cache side the first load that drafts is the third at the soonest: the first
-times the cache and checks its answers, the second times the host call. The stream kept behind a device cache as its fallback never drafts. The draft's
-context is not charged in the ledger: where it does not fit, the load fails to open and counts.
+times the cache and checks its answers, the second times the host call. The stream kept behind a device cache as its fallback never drafts.
+
+**The draft's bytes on a card.** A draft opens as a context of its own after the target, so none of it
+is in the fitter's placement. On a rented 24 GB card, a 15.2-15.6 GB device expert cache left no room
+for a draft of 3, and the session ran out of device memory reserving it (about 800 MiB of the target's
+layer input for the drafter, and 500 MiB more compute). Where the device's memory is its own, the draft
+is charged against the device expert cache (`draft_device_bytes`):
+- **weights:** the head's block inside the file (`ModelProfile::mtp_block_bytes`, which the probe sums
+  over the block's tensors), or a drafter's file (`draft_file_bytes`). A head in a file of its own is
+  placed by its own rule (`mtp-head-on-devices`);
+- **context:** what the front-end that opens the draft states (`ModelProfile::draft_context_bytes`), or
+  else one block's share of the target's KV on the devices plus the target's compute buffer moved to the
+  draft's width (`1 + draft`, at least the width a draft context is reserved at) along the fitter's
+  measured slope.
+
+A draft typed by hand is charged before the cache is sized. One the plan arms takes its bytes from the
+cache, and is not armed where what is left would not hold a verify. The side timed without a draft keeps
+the whole cache, so the two rates compare what each side really serves. Where the device's memory is the
+host's, the host's ledger holds the draft, as before. On a card without a device expert cache the
+fitter's placement does not charge the draft yet: where it does not fit, the load fails to open and
+counts.
 
 **A model the plan streams is offered to the device too, where the device can hold it whole.**
 llama.cpp would hold such a model on the device, and where that fits it can be the faster run by

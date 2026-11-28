@@ -105,6 +105,15 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   A separate drafter's file has a place in the model's facts (`ModelProfile::draft_file_bytes`) and joins
   the rule once this engine opens one
   ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+- **A draft's bytes are charged on a card before its device expert cache is sized.** On a rented 24 GB card,
+  a 15.2-15.6 GB device cache left no room for a draft of 3, and the session ran out of device memory
+  reserving it. A draft opens after the fitter's placement, so it was in no ledger. Where the device's
+  memory is its own, the draft's weights (the head's block inside the file, now summed by the probe as
+  `mtp_block_bytes`, or a drafter's `draft_file_bytes`) and its context are charged against the cache. The
+  context is what the front-end states (`draft_context_bytes`), or else one block's KV and the target's
+  compute at the draft's width. A draft typed by hand shrinks the cache before it is sized. One the plan
+  arms takes its bytes from the cache, and is not armed where the rest would not hold a verify.
+  Unified-memory devices are unchanged.
 
 ### Changed
 - **Smaller llama.cpp footprint for the device cache, the same behaviour.** The host address of device memory

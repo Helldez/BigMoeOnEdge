@@ -5081,6 +5081,8 @@ int main() {
         check(on_cache(headless) && !headless.config.spec.enabled() && !find(headless, "spec") &&
                   headless.config.trial.spec_side < 0,
               "device-cache draft: a model without a head arms none");
+        check(first.config.moe.device_cache_mb == headless.config.moe.device_cache_mb,
+              "device-cache draft, shared memory: the cache is not charged for the draft (the host's ledger is)");
 
         // Both sides measured: a draft slower, or inside the margin, is turned off; past it, kept.
         for (const auto & c : {std::make_tuple(20.0, 24.0, false), std::make_tuple(25.0, 24.0, false),
@@ -5185,6 +5187,71 @@ int main() {
                   validate(p.config).ok,
               "device-cache draft, a card: its expert cache holding a verify drafts, and times it",
               d ? d->reason : "no decision");
+
+        // The draft's own bytes on the card: its weights (the head's block inside the file), one block's
+        // share of the target's KV there, and the target's compute moved to the width a draft context is
+        // reserved at. None is in the fitter's placement, so a cache sized without them fills the card the
+        // draft then needs (a 24 GB card ran out of memory reserving a draft of 3 beside a 15.2 GB cache).
+        Placement busy = half;
+        busy.device_context_bytes = 4 * GiB;
+        busy.device_compute_bytes = 2 * GiB;
+        busy.compute_width = 512;
+        busy.device_compute_per_token = 2 * MiB;
+        ModelProfile block = headed;
+        block.mtp_block_bytes = 1 * GiB;
+        const uint32_t width =
+            (uint32_t) std::max(1 + PlannerPolicy::defaults().draft_tokens, SpecConfig::mtp_draft_ubatch);
+        const uint64_t charge = block.mtp_block_bytes + busy.device_context_bytes / model.n_layer +
+                                busy.at_width(width).device_compute_bytes;
+        ModelProfile no_head = block;
+        no_head.has_mtp = false;
+        const Plan bare = plan_run(base_cfg(), card, no_head, busy, keep, PlannerPolicy::defaults());
+        const int whole = bare.config.moe.device_cache_mb;
+        check(whole > 0 && !bare.config.spec.enabled(), "draft on a card: without a draft the cache is whole",
+              std::to_string(whole) + " MiB");
+        const auto shrunk_by = [&](const Plan & q) { return (uint64_t) (whole - q.config.moe.device_cache_mb) << 20; };
+        const auto near = [](uint64_t a, uint64_t b) { return (a > b ? a - b : b - a) <= MiB; }; // MiB rounding
+
+        // The plan arms the head: the cache gives the draft its bytes.
+        const Plan armed = plan_run(base_cfg(), card, block, busy, keep, PlannerPolicy::defaults());
+        const Decision * da = find(armed, "spec");
+        const Decision * dc = find(armed, "device-cache-mb");
+        check(armed.config.spec.is_mtp() && near(shrunk_by(armed), charge) && dc &&
+                  dc->value == std::to_string(armed.config.moe.device_cache_mb) && da &&
+                  da->reason.find("gives the draft") != std::string::npos,
+              "draft on a card, armed by the plan: the cache shrinks by the draft's bytes",
+              std::to_string(armed.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole) + ", charge " +
+                  std::to_string(charge >> 20) + " MiB");
+        // The side timed without the draft keeps the whole cache.
+        {
+            ModelProfile timed = block;
+            timed.knobs.spec_tps = 30.0;
+            const Plan off = plan_run(base_cfg(), card, timed, busy, keep, PlannerPolicy::defaults());
+            check(!off.config.spec.enabled() && off.config.trial.spec_side == 0 &&
+                      off.config.moe.device_cache_mb == whole,
+                  "draft on a card, the side without it timed: the cache is whole");
+        }
+        // A draft typed by hand is charged before the cache is sized.
+        {
+            RunConfig typed = base_cfg();
+            typed.spec.source = DraftSource::mtp;
+            typed.spec.draft_max = PlannerPolicy::defaults().draft_tokens;
+            PlanRequest pinned;
+            pinned.pinned = {"spec", "draft"};
+            const Plan q = plan_run(typed, card, block, busy, pinned, PlannerPolicy::defaults());
+            check(q.config.spec.is_mtp() && near(shrunk_by(q), charge),
+                  "draft on a card, typed by hand: the cache shrinks by the draft's bytes",
+                  std::to_string(q.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole));
+        }
+        // A drafter's context as the front-end that opens one states it, in place of the derivation.
+        {
+            ModelProfile stated = block;
+            stated.draft_context_bytes = 1300 * MiB;
+            const Plan q = plan_run(base_cfg(), card, stated, busy, keep, PlannerPolicy::defaults());
+            check(q.config.spec.is_mtp() && near(shrunk_by(q), stated.mtp_block_bytes + stated.draft_context_bytes),
+                  "draft on a card: a stated draft context is what the cache gives",
+                  std::to_string(q.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole));
+        }
     }
 
     return failures ? 1 : 0;

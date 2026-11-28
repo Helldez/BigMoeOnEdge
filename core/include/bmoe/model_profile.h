@@ -150,6 +150,10 @@ struct ModelProfile {
     // The MTP head file's size, where the run names one (SpecConfig::mtp_head): what placing the
     // head on a device costs that device. 0 where there is no file or it cannot be read.
     uint64_t mtp_head_bytes = 0;
+    // The multi-token-prediction block inside this file, summed over its tensors: excluded from every
+    // figure above because llama.cpp loads it only when a draft asks, and then it is loaded whole,
+    // experts and all, wherever its block is placed. 0 where the file has none.
+    uint64_t mtp_block_bytes = 0;
     // The multimodal projector's size, where the run names one (RunConfig::mmproj): what llama.cpp's
     // library holds beside the model to read images, whole, on a device the run uses or on the host.
     // Dense, so never streamed. 0 where there is no file or it cannot be read.
@@ -228,8 +232,13 @@ struct ModelProfile {
     // Bytes of a separate draft model the front-end found for this one (a drafter file beside it), 0 for
     // none. Not read from this file. The plan's draft rule asks whether the model has a draft at all
     // (planner.cpp, draft_source): today only its own head answers, and a drafter's file joins it there
-    // once this engine can open one, so the rule itself names no kind of draft.
+    // once this engine can open one, so the rule itself names no kind of draft. Its weights are what a
+    // device holding the draft is charged before its expert cache is sized (draft_device_bytes).
     uint64_t draft_file_bytes = 0;
+    // What a draft's context takes on a device beyond its weights, where the front-end that opens it
+    // knows better than the plan's derivation (its KV, its compute, a buffer of the target's layer input
+    // a drafter may read): 0 to have the plan derive it from the target's placement.
+    uint64_t draft_context_bytes = 0;
 
     // This model's own hit-rate curve, from a routing trace it recorded on an earlier run
     // (attach_routing in bmoe/routing.h). Not read from the file: a front-end that kept a trace hands

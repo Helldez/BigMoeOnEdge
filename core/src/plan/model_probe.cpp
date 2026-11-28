@@ -98,6 +98,7 @@ ModelProfile probe_model(const char * model_path, uint32_t engine_layers) {
     for (const auto & kv : meta.offsets.size_by_name) {
         if (!tensor_names::is_mtp_tensor(kv.first.c_str())) continue;
         m.has_mtp = true;
+        m.mtp_block_bytes += kv.second; // what drafting with it loads, beside everything counted below
         const int layer = tensor_names::block_layer(kv.first.c_str());
         if (layer >= 0) mtp_layers.insert(layer);
     }
