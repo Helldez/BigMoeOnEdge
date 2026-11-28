@@ -203,6 +203,12 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   every background fill held back and its slot set to ones until it lands (debug setting
   `--device-cache-fill-delay-us`): without the fix the gate fails, with it every answer is the model held
   whole on that device.
+- **A load that drafts no longer records its rate for another decision across loads.** A drafting load's
+  tokens per second count the accepted drafts, and were recorded as the rate of whatever side the load
+  served: on a rented 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3
+  for the experts' copy timed without drafts, and every load after turned the copy off and decoded
+  30-40% slower. A load that drafts (`--mtp`, `--ngram`, a draft model) now times only the draft's own
+  side (`--trial-spec`), and the host call's rule waits for a load that does not draft.
 
 ## [0.50.1] - 2026-11-25
 

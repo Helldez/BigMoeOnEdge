@@ -4714,6 +4714,8 @@ void choose_host_call(Plan & p, const ModelProfile & m, const PlanRequest & req)
     // The rate without it: its own side's, or the cache's, which was timed without it.
     const double off = mk.no_host_call_tps > 0.0 ? mk.no_host_call_tps : mk.device_cache_tps;
     if (off <= 0.0) return;
+    // A load that drafts times no side (record_side_rate): the unmeasured side waits for one that does not.
+    if (!lost(mk.host_call_unviable) && mk.host_call_tps <= 0.0 && c.spec.enabled()) return;
     Decision d;
     d.knob = "device-cache-host-call";
     char rates[160];

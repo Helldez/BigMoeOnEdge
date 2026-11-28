@@ -833,7 +833,8 @@ flowchart TD
   `device-cache-host-call` nor `trial-host-call` is pinned and no other cross-load side is timed.
 - The cache's side needs a rate first (`no_host_call_tps`, or `device_cache_tps`, timed without it).
 - Loads with it failed `unviable_max` times (`host_call_unviable`) → off.
-- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it.
+- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it; a load that drafts
+  (`spec.enabled()`) is left alone, since it times no side.
 - Both measured → the faster serves, and nothing is timed again.
 
 #### `plan.unplannable` — Nothing to plan: unknown model, dense model, unknown memory

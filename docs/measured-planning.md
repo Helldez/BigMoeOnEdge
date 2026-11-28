@@ -559,6 +559,13 @@ model, `no_spec_tps` without; each draft's acceptance and width, `spec_accept`/`
 being created with the target's,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
+A load that drafts times no side but the draft's own (`spec_tps`, `drafter_tps`). Its tokens per second
+count the drafts its verifies accepted, so its rate compares with no side timed without them: on a rented
+24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3 for the experts' copy,
+and every load after turned the copy off and decoded 30-40% slower. The session does not time it
+(`record_side_rate` keeps nothing else from a drafting load), and the host call's rule does not ask such a
+load to time its unmeasured side.
+
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
 word per device). The load that moves the model compares them before it serves and reopens on the
