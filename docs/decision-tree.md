@@ -558,6 +558,7 @@ flowchart TD
     plan_backends["<b>plan.backends</b><br/>One backend per card"]
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
+    plan_record_unstreamed["<b>plan.record-unstreamed</b><br/>A run that does not stream records its routing where no record exists"]
     plan_host_call["<b>plan.host-call</b><br/>A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
@@ -626,7 +627,8 @@ flowchart TD
     plan_prior_curve -.-> plan_backends
     plan_backends -.-> plan_held_whole
     plan_held_whole -.-> plan_shared_cache
-    plan_shared_cache -.-> plan_host_call
+    plan_shared_cache -.-> plan_record_unstreamed
+    plan_record_unstreamed -.-> plan_host_call
     plan_host_call -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
@@ -808,6 +810,16 @@ flowchart TD
   the cache plus the small batches' buffers (unless `ubatch` is pinned), `trial.device_tier = 1`,
   `trial.answer_device` unless confirmed, `fallback` = the streaming plan.
 - Otherwise the stream stays, timed as it serves (`trial.device_tier = 0`).
+
+#### `plan.record-unstreamed` — A run that does not stream records its routing where no record exists
+- parent: —
+- code: `core/src/plan/planner.cpp` · `choose_record_unstreamed`
+- condition: `if (!req.measure_knobs || !m.is_moe || c.moe.enabled || c.moe.routing_record_tokens <= 0) return;`
+- Asked by `plan_run` last. Only the streamer observes the routing by itself, so a run that serves
+  from a device expert cache or holds the model whole records nothing. Where the front-end keeps
+  records and the model has no record of its own (`hit_curve.measured` false) → `record_unstreamed`
+  on: one barrier per MoE layer per token until the record is full. The next plan prices the cache
+  and the drafts (`plan.spec`) on it. A pinned `record-unstreamed` is kept.
 
 #### `plan.host-call` — A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]
 - parent: —

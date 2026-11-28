@@ -5130,6 +5130,34 @@ void choose_spec(Plan & p,
     c.trial.spec_side = 0;
 }
 
+// ── a run that does not stream records its routing where no record exists yet ──
+// The routing record is what prices the expert cache at every size and a draft's verify (verify_curves),
+// and only the streamer observes the routing by itself: a run that serves from a device expert cache or
+// holds the model whole recorded nothing, so a model that only ever ran there was planned on the prior
+// curve and its drafts were never priced (Flash-Next on a 16 GB laptop, served from the device cache on
+// every load). Where the front-end keeps records and this model has none of its own, the run records
+// unstreamed: one barrier per MoE layer per token until the record is full, and nothing after; lossless.
+void choose_record_unstreamed(Plan & p, const ModelProfile & m, const PlanRequest & req) {
+    RunConfig & c = p.config;
+    // dt:plan.record-unstreamed
+    if (!req.measure_knobs || !m.is_moe || c.moe.enabled || c.moe.routing_record_tokens <= 0) return;
+    if (m.hit_curve.measured || req.is_pinned("record-unstreamed") || c.moe.record_unstreamed) return;
+    for (const Decision & x : p.decisions)
+        if (x.knob == "record-unstreamed") return; // a plan made again from this one already asked
+    c.moe.record_unstreamed = true;
+    Decision d;
+    d.knob = "record-unstreamed";
+    d.value = "on";
+    d.source = Source::Derived;
+    d.brief = "This load records the model's routing, which nothing streamed records here.";
+    d.reason = "the model is not streamed on this side, so only this records which experts it routes to; it has "
+               "no routing record of its own" +
+               std::string(m.hit_curve.rejected.empty() ? "" : " (" + m.hit_curve.rejected + ")") +
+               ", and the next plan prices its cache and its drafts on what this load records, for its first " +
+               u64s((uint64_t) c.moe.routing_record_tokens) + " tokens";
+    p.decisions.push_back(std::move(d));
+}
+
 Plan plan_run_placed(const RunConfig & base,
                      const HardwareProfile & hw,
                      const ModelProfile & model,
@@ -5148,6 +5176,7 @@ Plan plan_run(const RunConfig & base,
     Plan p = plan_run_placed(base, hw, model, projected, req, pol);
     choose_host_call(p, model, req);
     choose_spec(p, hw, model, projected, req, pol);
+    choose_record_unstreamed(p, model, req);
     return p;
 }
 

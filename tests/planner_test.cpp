@@ -5437,6 +5437,20 @@ int main() {
                   nr.config.spec.draft_max == pol.draft_tokens,
               "draft price, no record: unpriced, the coarse bound passes and the load times it at the plan's width",
               find(nr, "spec") ? find(nr, "spec")->reason : std::string());
+        // That side streams nothing, so nothing records the routing by itself: without a record of its own
+        // the load records it unstreamed, for the next plan to price on; with one, it does not.
+        const Decision * rec = find(nr, "record-unstreamed");
+        check(nr.config.moe.record_unstreamed && rec && rec->value == "on",
+              "routing record: a device-cache side with no record records unstreamed");
+        ModelProfile recorded = no_record;
+        recorded.hit_curve.measured = true;
+        recorded.hit_curve.points = {{0, 0.0}, {64 * MiB, 0.9}};
+        const Plan rp = plan_with(recorded);
+        check(!rp.config.moe.record_unstreamed && !find(rp, "record-unstreamed"),
+              "routing record: a model with its own record records nothing more");
+        PlanRequest no_keep;
+        const Plan nk = plan_run(long_ctx, uma, no_record, pl, no_keep, pol);
+        check(!nk.config.moe.record_unstreamed, "routing record: a front-end that keeps no records records nothing");
     }
 
     return failures ? 1 : 0;

@@ -1474,7 +1474,16 @@ draft priced inside the margin over none is not timed at all. A measured rate ov
 record, no price:** the union is set by how consecutive tokens' routing overlaps, which only a record
 says, and a bound from the model alone (positions routed independently) put a verify of 4 at nearly 4
 tokens' bytes and priced out drafts measured to pay. There the coarse bound decides (`verify_reads_held`)
-and the loads time it.
+and the loads time it. *This is a design choice pending review: the alternative is a bound from the
+model alone, which prices drafting out where it was measured to pay.*
+
+**A side that streams nothing records its routing.** Only the streamer observes the routing by itself, so
+a model served from a device expert cache, or held whole, never got a record: Flash-Next on the 16 GB
+laptop ran from the device cache on every load, and its drafts were never priced. Where the front-end
+keeps records and the model has none of its own, such a load records unstreamed
+(`choose_record_unstreamed`, `record-unstreamed`): one barrier per MoE layer per token until the
+record's 256 tokens are in, then nothing. The next plan prices on it. The load that records pays those
+barriers during its first tokens, which a side it times on the same load also sees.
 
 Then, one side a load:
 - **A draft not timed:** the load arms it and times its decode: the head first (`--trial-spec 1`),

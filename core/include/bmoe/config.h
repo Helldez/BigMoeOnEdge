@@ -252,9 +252,9 @@ struct MoeStreamConfig {
     int routing_record_tokens = 256;
     // Record the routing on a run that does not stream as well. With no streamer the routing nodes
     // are not otherwise observed, so recording them costs one barrier per MoE layer per token until
-    // the record is full, and nothing after. The planner sets it where a choice it has to make is
-    // priced by that record and none exists yet (the device tier); off, an unstreamed run records
-    // nothing, as before.
+    // the record is full, and nothing after. The planner sets it where the run does not stream, the
+    // front-end keeps records and the model has none of its own yet (choose_record_unstreamed): the
+    // record prices the cache and a draft's verify; off, an unstreamed run records nothing.
     bool record_unstreamed = false;
 
     // How the dense (non-expert) weights are treated. The streamer only rebinds experts; the rest —
