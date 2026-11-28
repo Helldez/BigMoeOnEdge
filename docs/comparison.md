@@ -6,7 +6,7 @@ are faster there; this one builds on llama.cpp's public API and plans itself for
 finds. This page puts both sides next to each other: what each engine runs on, and the speeds each
 reports.
 
-Last checked on 2026-11-10 against each project's own pages and the sources linked below. Corrections
+Last checked on 2026-11-28 against each project's own pages and the sources linked below. Corrections
 are welcome as a pull request or an issue.
 
 ## What each engine runs on
@@ -14,12 +14,16 @@ are welcome as a pull request or an issue.
 | Engine | Runs on | Accelerators | Models | Experts beyond RAM | Configures itself |
 |---|---|---|---|---|---|
 | **BigMoeOnEdge** | Android, iOS, macOS, Windows, Linux | CPU, Metal, CUDA, HIP, Vulkan, OpenCL, Hexagon NPU | any MoE GGUF llama.cpp loads | streamed from flash, behind a RAM cache and a GPU cache | `--auto`: measures the machine and the model's own layers and routing, sets every knob and gives the reason for each ([hardware-planning.md](hardware-planning.md)) |
-| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Android, iOS, macOS, Windows, Linux | CPU, Metal, CUDA, HIP, Vulkan, SYCL, OpenCL | any GGUF | left to the OS page cache (memory-mapped file) | `--fit` places layers by device memory |
-| [Strata](https://github.com/Niko1221/Strata) | Windows, Linux, macOS (desktop app and terminal) | NVIDIA RTX 20-50 and DGX Spark, AMD Radeon RX 7000/9000 and Strix Halo, Intel Arc (Linux), Apple silicon | Qwen3.8-Flash-Next, Qwen3.6-35B-A3B, DeepSeek V4.1 Flash | read from SSD for DeepSeek V4.1 Flash | model choice by memory; `--plan` |
-| [ds4](https://github.com/antirez/ds4) | macOS, Linux | Metal, CUDA, ROCm (Strix Halo / RDNA), CPU (debugging) | DeepSeek V4 and V4.1 Flash, V4 PRO, GLM 5.2/5.3, Qwen3.8-Flash-Next, from its own GGUFs | streamed from SSD (`--ssd-streaming`) | automatic expert-cache budget |
-| [colibri](https://github.com/JustVugg/colibri) | Linux, macOS, Windows | CPU, Vulkan, CUDA, Metal | its own container, one engine per family (GLM, DeepSeek, Kimi, MiMo, Qwen, ...) | streamed from disk | `coli plan` shows the placement, `coli tune` measures and saves settings |
-| [Lucebox](https://github.com/Luce-Org/lucebox) | Linux (Docker images for CUDA and ROCm) | CUDA (RTX 20-50, DGX Spark, Jetson Thor), HIP (Radeon AI PRO R9700, RX 7900, Strix Halo) | listed models with tuned profiles (Qwen 3.5/3.6/3.8, Laguna XS, Gemma 4, DeepSeek V4 and V4.1 Flash, Ling 3.0 Flash) | DeepSeek V4.1 Flash across two AMD devices and an SSD (refused on CUDA builds); hot experts on the GPU and the rest on the CPU (`--spark`) for Qwen3.6 and Laguna | per-model profiles; `--spark` learns the expert placement from traffic across restarts |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | Android, iOS, macOS, Windows, Linux | CPU, Metal, CUDA, HIP, Vulkan, SYCL, OpenCL | any GGUF | left to the OS page cache (memory-mapped file); streaming from disk is an RFC ([#23324](https://github.com/ggml-org/llama.cpp/discussions/23324)) | `--fit` places layers by device memory; `moe-cache` keeps experts held in RAM in a GPU cache |
+| [Strata](https://github.com/Niko1221/Strata) | Windows, Linux, macOS (desktop app and terminal) | NVIDIA RTX 20-50 and DGX Spark, AMD Radeon RX 7000/9000 (RX 6800/6900 experimental) and Strix Halo, Intel Arc (Linux), Apple silicon | Qwen3.8-Flash-Next, Qwen3.6-35B-A3B, Ornith-1.5-35B-A3B, Hy4-Flash, Inkling 2 Mini; a `.gguf` of your own since 0.2.23. DeepSeek V4.1 Flash dropped after 0.2.13 | since 0.2.20 a planner spreads Flash-Next, Hy4-Flash and Inkling 2 Mini across GPU, RAM, CPU and SSD | model choice by memory; `strata launch` |
+| [ds4](https://github.com/antirez/ds4) | macOS, Linux | Metal, CUDA, ROCm (Strix Halo) | DeepSeek V4 and V4.1 Flash, V4 PRO, GLM 5.2/5.3, GLM 5.3 Flash, Qwen3.8-Flash-Next, from its own GGUFs | streamed from SSD (`--ssd-streaming`): DeepSeek, GLM and Qwen3.8 on Metal, GLM on ROCm | automatic expert-cache budget |
+| [colibri](https://github.com/JustVugg/colibri) | Linux (x86_64, aarch64), macOS, Windows, FreeBSD from source | CPU, Vulkan, CUDA, Metal | its own container, one engine per family (GLM, DeepSeek, Kimi, MiMo, Qwen, Inkling, ...); GGUF read through `coli import` since 2.1 | streamed from disk, behind a learned cache | `coli setup` measures the machine and recommends a model; `coli plan`, `coli tune` |
+| [Lucebox](https://github.com/Luce-Org/lucebox) | Linux (Docker images for CUDA and ROCm) | HIP (Radeon AI PRO R9700, Ryzen AI MAX+, RX 7900 by a build flag), CUDA (Volta onward, DGX Spark) | listed GGUF models with launch profiles (Qwen3.8 27B and Flash-Next, DeepSeek V4 and V4.1 Flash, Inkling 2 Mini, MOSS-Image) | the busiest experts on the R9700 and, for DeepSeek V4.1 Flash on 128 GB, the rest streamed from the SSD | a launch profile per model, picked from the GPUs it finds; `--target-device auto` |
 | [KTransformers](https://github.com/kvcache-ai/ktransformers) | Linux, Windows | CPU (AVX2, AVX-512, AMX), NVIDIA, AMD ROCm, Intel Arc, Ascend | listed families (DeepSeek, Kimi, GLM, Qwen3, MiniMax, Mixtral, ...) | held in RAM (hot experts on the GPU, the rest on the CPU), not streamed | not documented |
+
+[Basalt](https://github.com/jesdga95/basalt), a Strata fork, runs its own `.basalt` packs (NVFP4, MXFP4,
+F8) on NVIDIA Blackwell only, with a drafter on by default for each model; experts that do not fit the
+card go to RAM, none to the SSD. It is in the speed tables below, not in this one.
 
 ## Speeds each reports
 
@@ -28,15 +32,30 @@ contexts, prompts and settings (speculative decoding on or off), and most are se
 show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's, measured as
 [benchmarks.md](benchmarks.md) describes.
 
+### Qwen3.6-35B-A3B (21 GB at Q4_K_M)
+
+| Engine | Hardware | Quant | Decode | Prefill | Source |
+|---|---|---|---:|---:|---|
+| BigMoeOnEdge 0.50 | 24 GB desktop GPU, the whole model on it | Q4_K_M | 156 | 7,492 (4.6k-token prompt) | [bench-data](bench-data/2026-11-25-release-0.50/README.md) |
+| colibri 2.2 | RTX PRO 4000 Blackwell 24 GB | UD-Q4_K_M | 104-106 | | [colibri 2.2.0 release](https://github.com/JustVugg/colibri/releases) |
+| BigMoeOnEdge 0.50 | 12 GB desktop GPU, 61 GB RAM | Q4_K_M | 99-102 | 3,571 (4.6k) | [bench-data](bench-data/2026-11-25-release-0.50/README.md) |
+| colibri 2.2 | Ryzen 7 PRO 8700GE, CPU only | UD-IQ2_XXS | 26-27 | | [colibri 2.2.0 release](https://github.com/JustVugg/colibri/releases) |
+
+The same-machine runs against Strata and Lucebox on this model are [below](#same-machine-same-file).
+
 ### Qwen3.8-Flash-Next 125B (larger than the GPU, smaller than GPU + RAM)
 
 | Engine | Hardware | Quant | Decode | Prefill | Source |
 |---|---|---|---:|---:|---|
 | Basalt (a Strata fork for Blackwell) | RTX 5090 32 GB | Q2_0 | 377-400 | 8,573 (42k-token prompt) | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
 | Strata | RTX 5090 32 GB | Q2_0 | 223-259 | 6,158 (42k-token prompt) | same review |
+| Strata 0.2.19 | RTX 5090 32 GB | IQ3_S | 162 | | [release notes](https://github.com/Niko1221/Strata/releases) |
 | Strata | RTX 4090 24 GB | IQ1_M | 89-106 | ~3,500 (4k-token prompt) | [community report](https://github.com/Niko1221/Strata/issues/2263) |
 | Strata | Strix Halo (AMD, ROCm) | Q2_0 | 55-65 | 371 | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
+| colibri 2.2 | RTX PRO 4000 Blackwell 24 GB, 62 GB RAM | UD-IQ2_XS / UD-IQ3_XXS | 56-57 / 42 | | [colibri 2.2.0 release](https://github.com/JustVugg/colibri/releases) |
 | BigMoeOnEdge | 24 GB desktop GPU, 96 GB RAM | Q2_0 | 70 | | [README](../README.md#performance) |
+| BigMoeOnEdge 0.50 | 12 GB desktop GPU, 61 GB RAM | Q2_0 | 45-51 | 1,372 (4.6k-token prompt) | [bench-data](bench-data/2026-11-25-release-0.50/README.md) |
+| BigMoeOnEdge 0.50 | 24 GB desktop GPU, 23 GB RAM (streamed) | Q2_0 | 16-19 | 767 (4.6k) | [bench-data](bench-data/2026-11-25-release-0.50/README.md) |
 | BigMoeOnEdge | 16 GB desktop GPU, 32 GB RAM | Q2_0 | 19-21 | | [README](../README.md#performance); Strata 50-66 and llama.cpp 17-19 on the same box ([bench-data](bench-data/2026-10-27-rented-16gb/README.md)) |
 | BigMoeOnEdge | two 16 GB desktop GPUs, 60 GB RAM | Q2_0 | 41-48 | | [README](../README.md#performance) |
 | BigMoeOnEdge | 8 GB desktop GPU, 31 GB RAM (streamed) | Q2_0 | 16 | | [README](../README.md#performance) |
@@ -53,8 +72,10 @@ show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's,
 | Lucebox | Strix Halo 128 GB, its DSpark drafter | V4 Flash, ROCmFPX mix | 42 (8k), 39 (code, math), 25 (prose) | 320 (8k) | same |
 | ds4 | Apple M5 Max 128 GB | V4 Flash, Q2 | 26 | | [overview](https://insiderllm.com/guides/ssd-streaming-moe-engines/) |
 | ds4 | DGX Spark 128 GB | V4 Flash, Q2 | 14-18 | ~825 | [ds4 performance notes](https://github.com/antirez/ds4/blob/main/docs/PERFORMANCE.md) |
-| Strata | RTX 5090 32 GB | V4.1 Flash, 2-bit | ~17 | | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
+| Strata (0.2.13 or earlier: V4.1 Flash dropped since) | RTX 5090 32 GB | V4.1 Flash, 2-bit | ~17 | | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
 | llama.cpp fork with expert streaming | RTX 5090 32 GB, 126 GB RAM | V4.1 Flash, MXFP4 experts | 5.1 new content, 21 cached | | [discussion #28766](https://github.com/ggml-org/llama.cpp/discussions/28766) |
+| Lucebox | Radeon AI PRO R9700 + Ryzen AI MAX+, 192 GB | V4.1 Flash | 54 | | [Lucebox README](https://github.com/Luce-Org/lucebox) |
+| colibri 2.2 | RTX PRO 4000 Blackwell 24 GB, 62 GB RAM | V4 Flash UD-IQ1_S | 6 (CUDA), 6.4-6.5 (Vulkan) | | [colibri 2.2.0 release](https://github.com/JustVugg/colibri/releases) |
 | colibri | RTX 5080 16 GB, 32 GB RAM, two NVMe | V4 Flash | 1.5-1.6 | | [colibri](https://github.com/JustVugg/colibri) |
 | BigMoeOnEdge | two 16 GB desktop GPUs, 60 GB RAM (streamed) | V4 Flash, UD-IQ2_M | 5 | | [README](../README.md#performance) |
 | BigMoeOnEdge | 12 GB Android phone | V4 Flash | 1 | | [README](../README.md#performance) |

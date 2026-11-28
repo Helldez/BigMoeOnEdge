@@ -6,6 +6,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Helldez/BigMoeOnEdge/releases/latest"><img src="https://img.shields.io/github/v/release/Helldez/BigMoeOnEdge" alt="Última versión"></a>
   <a href="https://github.com/Helldez/BigMoeOnEdge/actions/workflows/ci.yml"><img src="https://github.com/Helldez/BigMoeOnEdge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="Licencia"></a>
@@ -15,10 +19,11 @@
 
 Esta es una traducción; el README en inglés es la referencia y puede ser más reciente.
 
-Ejecuta modelos Mixture-of-Experts más grandes que la memoria de tu dispositivo. Los expertos se leen de la
-flash cuando el modelo los necesita. Android, iOS, macOS, Windows y Linux, construido sobre llama.cpp.
-Framework de streaming unificado: de teléfonos y portátiles a GPU de consumo y de centro de datos. Admite cualquier hardware, cualquier sistema operativo, cualquier modelo, cualquier cuantización.
-Planificación automática de recursos, hecha a medida para optimizar los tok/s.
+Ejecuta modelos Mixture-of-Experts más grandes que la memoria de tu dispositivo. El motor mantiene en
+memoria los pesos que necesita cada token y los expertos más usados, y lee el resto de la flash cuando el
+modelo los pide. Un solo motor para teléfonos, portátiles y GPU de escritorio y de centro de datos, en
+Android, iOS, macOS, Windows y Linux: mide la máquina y el modelo y se configura solo. Construido sobre
+llama.cpp.
 
 <table align="center">
 <tr>
@@ -38,8 +43,7 @@ Planificación automática de recursos, hecha a medida para optimizar los tok/s.
 </table>
 
 Qwen3.6-35B-A3B, más grande que la memoria de cada dispositivo; funciona cualquier modelo MoE en
-GGUF, con cualquier cuantización. Las velocidades de decodificación son las de la tabla de
-[Rendimiento](#rendimiento).
+GGUF, con cualquier cuantización. Velocidades por máquina y versión: [Rendimiento](#rendimiento).
 
 **El agente en un portátil de 2021, sin GPU**: el prompt viral de la pagoda de vóxeles al agente integrado en un ThinkPad con 16 GB de RAM, solo CPU, y Qwen3.6-35B-A3B Q4_K_M. 988 líneas a 2,3 tok/s y luego la página en la vista previa de la app; las partes aceleradas se indican en pantalla.
 
@@ -56,40 +60,40 @@ GGUF, con cualquier cuantización. Las velocidades de decodificación son las de
 - **Todos los backends.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL y la Hexagon NPU. En una tarjeta gráfica,
   los expertos más usados se quedan en su VRAM.
 - **Apps y un servidor.** Una app de escritorio, apps para el teléfono y un servidor compatible con OpenAI y
-  Anthropic para agentes de programación.
+  Anthropic para agentes de programación, y un agente propio en la app de escritorio.
 - **Ve imágenes.** Pon junto al modelo su archivo de proyector (`mmproj`) y el servidor lee imágenes en
   todas las API; la CLI con `--mmproj` e `--image`. Cualquier modelo de visión que conozca la biblioteca de
   proyectores de llama.cpp, en cualquier cuantización, en todos los backends.
 
-## Rendimiento
+## Plataformas
 
-| Hardware | Memoria | Modelo | En disco | Expertos desde | Decodificación tok/s |
-|---|---|---|---:|---|---:|
-| **Teléfono Android** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | flash | 1 |
-|  |  | Qwen3.8-Flash-Next 125B | 80 GB | flash | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5-6 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 6 |
-| **Portátil Apple silicon** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
-| **Portátil Windows** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
-| **GPU de escritorio** (NVIDIA) | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM, caché en GPU | 16-17 |
-| **GPU de escritorio** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 19-21 |
-| **GPU de escritorio** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 70 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **GPU de escritorio** (NVIDIA) | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
-|  | 12 GB de ellos libres | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 59-67 |
-|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
-|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **GPU de escritorio** (NVIDIA) | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 16 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 37-44 |
-| **Dos GPU de escritorio** (NVIDIA) | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 41-48 |
-|  |  | DeepSeek V4 Flash 284B | 91 GB | flash, caché en GPU | 5 |
-| **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+| | Android | iOS | macOS | Windows | Linux |
+|---|---|---|---|---|---|
+| Motor y CLI | arm64 | arm64 (dentro de la app) | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
+| App | app nativa (APK) | app nativa, beta en TestFlight | app de escritorio (`.dmg`) | app de escritorio (instalador) | app de escritorio (AppImage) |
+| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan; OpenCL y Hexagon NPU en arm64 | CUDA, HIP, Vulkan |
+| Probado en | un teléfono de 12 GB | iPhone de 12 GB | un portátil de 16 GB | un portátil de 16 GB; portátiles y equipos de escritorio NVIDIA en informes de usuarios | tarjetas NVIDIA alquiladas de 8 a 32 GB, una tarjeta AMD de 192 GB |
 
-Un rango es la variación entre ejecuciones. Método y todas las ejecuciones:
-[docs/benchmarks.md](docs/benchmarks.md). Para añadir tu máquina, ejecuta
-`scripts/bench-report.sh model.gguf` y abre un
-[informe de benchmark](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
+Qué está medido, publicado o aún pendiente en cada una: [docs/platforms.md](docs/platforms.md).
+
+## Cómo se compara
+
+| | **BigMoeOnEdge** | llama.cpp | Strata | Lucebox | ds4 | colibri | KTransformers |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Teléfono Android (también NPU) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| iPhone | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Mac | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Solo CPU | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AMD | ✅ ROCm, también MI300X | ✅ | Radeon RX, Strix Halo | R9700, Ryzen AI MAX+ | Strix Halo | Vulkan | ✅ |
+| Modelos | cualquier GGUF MoE | cualquier GGUF | una lista; tu propio archivo desde 0.2.23 | una lista | sus propios GGUF | formato propio; GGUF por importación | familias listadas |
+| Expertos más allá de la RAM | en streaming desde la flash | caché de páginas del SO | repartidos al SSD por su planificador | en streaming desde SSD (DeepSeek V4.1) | en streaming desde SSD | en streaming desde el disco | en RAM |
+| Se configura solo | ✅ `--auto`, a partir de mediciones | `--fit` | elige el modelo según la memoria | un perfil por conjunto de GPU | presupuesto de la caché de expertos | `coli setup`, `coli tune` | ❌ |
+
+En qué funciona cada motor y las velocidades que publica cada uno, comprobado el 2026-11-28:
+[docs/comparison.md](docs/comparison.md). Frente a ellos en la misma máquina:
+[Rendimiento](#rendimiento).
 
 ## Instalación
 
@@ -101,7 +105,9 @@ Desde la [última versión](https://github.com/Helldez/BigMoeOnEdge/releases/lat
 - **Linux**: haz ejecutable el `.AppImage` y ejecútalo. La ventana necesita WebKitGTK 4.1;
   `--server` ejecuta solo el servidor.
 - **Android**: instala `app-dev-release.apk`. Cada versión se instala sobre la anterior.
-- **iOS**: compila la app con Xcode desde [examples/ios](examples/ios/README.md). Experimental.
+- **iOS**: únete a la [beta de TestFlight](https://testflight.apple.com/join/fKks3qjJ), compilada desde las
+  etiquetas de versión por un colaborador, o compila la app con Xcode desde [examples/ios](examples/ios/README.md).
+  Experimental.
 
 Abre la app y elige un modelo en **Models**. Una tarjeta NVIDIA o AMD obtiene su backend desde
 **Settings** ([docs/desktop-app.md](docs/desktop-app.md)).
@@ -128,6 +134,15 @@ El servidor habla la API de OpenAI (`/v1/chat/completions`, `/v1/responses`) y l
 (`/v1/messages`), con streaming, llamadas a herramientas y razonamiento. Añade `--host 0.0.0.0 --api-key KEY`
 para dar servicio a otras máquinas. Referencia: [docs/server-api.md](docs/server-api.md).
 
+En una máquina que queda encendida, regístralo en su lugar como servicio de tu sesión: arranca con la
+máquina, vuelve con su modelo y lo recarga cuando una petición no encuentra ninguno cargado
+([ejecutar como servicio](docs/server-api.md#running-as-a-service)).
+
+```bash
+bmoe-server service install --host 0.0.0.0 -m model.gguf -c 65536   # systemd, launchd or Task Scheduler
+bmoe-server service status
+```
+
 ```python
 from openai import OpenAI
 
@@ -139,6 +154,9 @@ print(reply.choices[0].message.content)
 **Los agentes de programación** necesitan un contexto grande: varias veces el tamaño de su primera petición.
 32768 basta para opencode, 65536 para Claude Code
 ([dimensionar el contexto](docs/server-api.md#sizing-the-context-for-a-client)).
+
+<details>
+<summary>Configuración de opencode, Claude Code y Codex CLI</summary>
 
 ```jsonc
 // opencode, ~/.config/opencode/opencode.json
@@ -176,6 +194,8 @@ base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
+
+</details>
 
 En **Connect apps**, la app escribe la configuración de opencode y Codex CLI y muestra la de
 Claude Code.
@@ -217,31 +237,54 @@ escritorio reciben planes distintos del mismo código. Los valores que fijas tú
   <img src="docs/assets/diagrams/plan-es.png" width="820" alt="El planificador: la máquina y el modelo entran en el plan; el plan decide dónde va cada peso (VRAM, RAM o flash), qué dispositivo lee el prompt y cuál genera los tokens, y el tamaño de las cachés y los hilos; se mide la primera respuesta y lo más rápido se guarda para la próxima carga.">
 </p>
 
-## Plataformas
+## Rendimiento
 
-| | Android | macOS | Windows | Linux | iOS |
-|---|---|---|---|---|---|
-| Motor y CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (dentro de la app) |
-| App | app nativa | app de escritorio | app de escritorio | app de escritorio | app nativa, compilada desde el código fuente |
-| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA, OpenCL (arm64), Hexagon NPU (arm64) | Vulkan, CUDA, HIP | Metal |
-| Probado en | teléfono de 12 GB | portátil de 16 GB | portátil de 16 GB | tarjetas NVIDIA de 12-24 GB y AMD de 192 GB alquiladas | iPhone de 12 GB |
+Decodificación en tokens por segundo, `--auto`, un solo flujo. Un rango es la variación entre ejecuciones.
 
-Detalles: [docs/platforms.md](docs/platforms.md).
+**Medido en 0.50** ([bench-data](docs/bench-data/2026-11-25-release-0.50/README.md)):
 
-## Cómo se compara
+| Hardware | Memoria | Modelo | En disco | Expertos desde | Decodificación tok/s |
+|---|---|---|---:|---|---:|
+| **GPU de escritorio** (NVIDIA) | 24 GB + 23 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 156 |
+|  |  | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 16-19 |
+| **GPU de escritorio** (NVIDIA) | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 99-102 |
+|  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 45-51 |
 
-| | **BigMoeOnEdge** | Strata | ds4 | colibri | KTransformers |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Teléfono Android (también NPU) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux, solo CPU | ✅ | ❌ | Linux, para depurar | ✅ | ❌ |
-| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AMD (ROCm) | ✅ (también MI300X) | Radeon RX y Strix Halo | Strix Halo y RDNA | Vulkan | ✅ |
-| Cualquier modelo MoE en GGUF | ✅ | pocos modelos | pocos modelos | formato propio | pocos modelos |
-| Se configura solo | ✅ `--auto` | elige el modelo según la memoria | presupuesto de la caché de expertos | `coli tune` | ❌ |
+**Versiones anteriores**, que se mantienen hasta que una prueba de versión las vuelva a medir:
 
-Velocidades y fuentes: [docs/comparison.md](docs/comparison.md).
+| Hardware | Memoria | Modelo | En disco | Expertos desde | Decodificación tok/s |
+|---|---|---|---:|---|---:|
+| **Teléfono Android** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | flash | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | flash | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 6 |
+| **Portátil Apple silicon** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
+| **Portátil Windows** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **GPU de escritorio** (NVIDIA) | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM, caché en GPU | 16-17 |
+| **GPU de escritorio** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 19-21 |
+| **GPU de escritorio** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **GPU de escritorio** (NVIDIA) | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
+|  | 12 GB de ellos libres | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **GPU de escritorio** (NVIDIA) | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 37-44 |
+| **Dos GPU de escritorio** (NVIDIA) | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | flash, caché en GPU | 5 |
+| **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+
+**Frente a otros motores, misma máquina y mismo archivo.** Con Qwen3.6-35B-A3B este motor va por delante:
+55 tok/s frente a los 41 de Strata en una tarjeta de 12 GB (0.45), 154 frente a los 123 de Lucebox en una de
+24 GB (0.41). Con Qwen3.8-Flash-Next Strata es de dos a tres veces más rápido: 23 frente a 45 en una tarjeta
+de 12 GB, 16 frente a 49 en una de 8 GB (0.45). Todas las ejecuciones:
+[docs/comparison.md](docs/comparison.md#same-machine-same-file).
+
+Método y todas las ejecuciones: [docs/benchmarks.md](docs/benchmarks.md). Para añadir tu máquina, ejecuta
+`scripts/bench-report.sh model.gguf` y abre un
+[informe de benchmark](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
 
 ## Compilar desde el código fuente
 
@@ -255,8 +298,10 @@ build/bin/bmoe-server --open
 
 Un backend de llama.cpp es una opción de CMake que se pasa tal cual: `scripts/build-host.sh -DGGML_VULKAN=ON`
 (o `-DGGML_CUDA=ON`). Tests: `cd build && ctest --output-on-failure` (requiere `python3` con `gguf`). Android:
-`scripts/build-android.ps1`, y luego el APK en [examples/android](examples/android). Más:
-[CONTRIBUTING.md](CONTRIBUTING.md).
+`scripts/build-android.ps1`, y luego el APK en [examples/android](examples/android). En el propio teléfono,
+en Termux: `pkg install git cmake clang make nodejs-lts`, y luego los pasos de arriba con
+`scripts/build-host.sh -DBMOE_BACKEND_MODULES=OFF`, una sola biblioteca de CPU para los núcleos de ese
+teléfono en lugar de un módulo por nivel de conjunto de instrucciones. Más: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentación
 

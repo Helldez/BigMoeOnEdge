@@ -17,6 +17,10 @@ the memory limit entitlement alone, and on the phone it loaded Qwen3.6-35B-A3B Q
 with no crash (#235). Earlier harness runs on the same phone are what #304, #312, #318 and #320
 corrected. It is experimental: two turns of chat are not a pressure-stability guarantee.
 
+**TestFlight.** A contributor builds the app from chosen release tags on their own Apple account
+and ships it as a [TestFlight beta](https://testflight.apple.com/join/fKks3qjJ), the first from
+v0.47.2 (#235): the way to install it without Xcode.
+
 ## The app
 
 ```
