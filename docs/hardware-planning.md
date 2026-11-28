@@ -1340,6 +1340,38 @@ the file's own bytes, on the host and on every device. A host and a device are a
 same experiment: the real layer where both ran it, the synthetic GEMV (which also sweeps the thread
 count) otherwise.
 
+### A device expert cache warmed at load
+
+A device expert cache starts empty and fills on its misses, so a short session pays every expert it
+will hold as a miss inside a decode step. A load timed on such a session times those first touches. On
+a rented 32 GB card with Qwen3.8-Flash-Next Q2_0, a cold 26 GB cache served 91.5% of its first 256
+tokens' experts at about 11.0 ms a step, where the same cache warm served 97.8% at 8.8 ms. On a 24 GB
+card the hit was the same at a 19 GB cache, so those misses were first touches, not a cache too small.
+On a 12 GB card an earlier warm bought nothing for its load time: there the misses were the cache's
+size. Strata, on the same card, starts from a routing profile that fills 76% of the experts.
+
+So `--auto` warms the cache at load (`device-cache-warm`, `choose_cache_warm`) with what the model's own
+routing record decoded most often (`hottest_experts`), hottest first, up to the cache's slots, on the
+path its misses take: an upload to a card, the file into the slots where the host writes them in place.
+It does so where the record says the cold misses are first touches and the fill costs no more than
+they would:
+- **what a warm holds:** the hottest whole experts the cache's bytes take;
+- **what it saves:** those bytes on the miss path, at the share of the record's cold misses at this
+  cache that are first touches. That share is the record's decoded experts' bytes over its missed
+  bytes, capped at 1, and is an upper bound, since some were first seen in the prompt;
+- **what it costs:** the same bytes at the rate the last warm here filled them (`MeasuredKnobs::warm_experts`,
+  `warm_s`), or on the miss path itself before any warm. They are the same bytes on the same path, so a
+  fill priced inside the margin of what it saves is taken: it moves them out of the steps.
+
+The cache is not warmed where it is lent to a prompt's wide passes, which empty it before the first
+answer, and not without a record: there is nothing to warm with. A load that serves the device cache
+records the routing only when it times nothing (`record-unstreamed`, above), so the first loads run
+cold, and the next plan warms. The load that times the cache's side is warmed like any other. And on
+every side the rate a load is kept at leaves out the probe's settling window, so a cold cache's first
+touches are not weighed against a placement that has none. Before this, a warm fitter's placement at
+96-108 tok/s was compared with a cold cache at 88-91, and the fitter's placement was kept. The host
+call stays its own decision across loads, on that side (`plan.host-call`).
+
 ### A streamed model on a device that shares memory
 
 EXPERIMENTAL (`shared_device_cache`, `plan.shared-cache` in [decision-tree.md](decision-tree.md)).

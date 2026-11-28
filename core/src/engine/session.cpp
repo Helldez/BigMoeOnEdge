@@ -380,6 +380,10 @@ struct Session::Impl {
         // What this load decoded over every turn, and the seconds it took: the rate of the side it
         // serves, once the probe has timed its windows (note_request_mix).
         double served_tokens = 0.0, served_seconds = 0.0;
+        // Of those, what the probe waited through for the cache to settle: left out of the side's rate, so
+        // a side is compared warm against warm (a cold device cache's first touches against a fitter's
+        // placement that has none measured the cache 8-15% under what it decoded warm).
+        double settle_tokens = 0.0, settle_seconds = 0.0;
         bool rate_timed = false; // the probe has timed its windows on this load
         bool served_rate_said = false;
         int stage = stage_done;
@@ -2611,6 +2615,10 @@ void Session::Impl::pause_trial() {
 void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
     RateProbe & r = *trials.rate_probe;
     const bool settling = r.settling();
+    if (settling && tokens > 0 && seconds > 0.0) {
+        trials.settle_tokens += tokens;
+        trials.settle_seconds += seconds;
+    }
     r.record(seconds, tokens, lookups, hits);
     const bool tier = cfg.trial.device_tier >= 0;
     char what[96];
@@ -2697,16 +2705,21 @@ void Session::Impl::note_request_mix(const RunSummary & sum) {
     // placement was timed at 2.27 tok/s on a load whose answers decoded at 4.1 and 6.5, against a
     // device cache timed at 3.17 on a load that decoded at 2.8 and 3.6, and the plan after kept the
     // slower side. Both sides are a whole load's rate, so they are compared like for like.
+    // The probe's settling window is left out, on every side alike: what a side is judged by is what it
+    // decodes once its cache is warm, not the first touches of a cache that started empty.
     trials.served_tokens += sum.n_generated;
     trials.served_seconds += sum.gen_seconds;
-    if (trials.rate && trials.rate_timed && trials.served_seconds > 0.0 && trials.served_tokens > 0.0) {
-        const double tps = trials.served_tokens / trials.served_seconds;
+    const double served_tokens = trials.served_tokens - trials.settle_tokens;
+    const double served_seconds = trials.served_seconds - trials.settle_seconds;
+    if (trials.rate && trials.rate_timed && served_seconds > 0.0 && served_tokens > 0.0) {
+        const double tps = served_tokens / served_seconds;
         record_side_rate(cfg.trial, tps, r);
         if (!trials.served_rate_said) {
             trials.served_rate_said = true;
             log_printf(LogLevel::Info,
-                       "knob trial: this load's side is kept at what it decoded at, %.2f tok/s over %.0f tokens so far",
-                       tps, trials.served_tokens);
+                       "knob trial: this load's side is kept at what it decoded at past the cache's settling, %.2f "
+                       "tok/s over %.0f tokens so far",
+                       tps, served_tokens);
         }
     }
 }
@@ -3056,6 +3069,25 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     // dt:open.host-buffer
     if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
+    // The cache starts filled with what this model decoded most often, from its own routing record
+    // (MoeStreamConfig::device_cache_warm): the experts a short session would otherwise upload on their
+    // first touch. Nothing is evicted, so the slots past the record's experts stay free. What it cost
+    // goes in the record (MeasuredKnobs::warm_experts, warm_s), for the next plan to price it at.
+    // dt:open.cache-warm
+    if (cfg.moe.device_cache_mb > 0 && cfg.moe.device_cache_warm && cfg.moe.device_cache_warm_experts &&
+        !cfg.moe.device_cache_warm_experts->empty()) {
+        const auto t0 = clock_t_::now();
+        const std::vector<uint32_t> & hot = *cfg.moe.device_cache_warm_experts;
+        const size_t n = llama_moe_cache_warm(im.ctx.get(), hot.data(), hot.size());
+        const double s = secs(t0, clock_t_::now());
+        if (n > 0) {
+            im.trials.result.warm_experts = (int) n;
+            im.trials.result.warm_s = s;
+        }
+        log_printf(LogLevel::Info,
+                   "device expert cache: %zu of the %zu experts this model decoded most often filled at load, %.2f s",
+                   n, hot.size(), s);
+    }
     // dt:open.answer-check-cache
     if (check && !cfg.trial.answer_device.empty() && check_after_cache) {
         if (!run_answer_check()) return nullptr;

@@ -113,6 +113,12 @@ inline constexpr double k_prior_hit_ceiling = 0.92; // what the long-run lookups
 inline constexpr double k_prior_hit_cycles = 2.25;  // the cycles a cache needs for 63% of that
 HitCurve prior_hit_curve(uint64_t expert_bytes, uint64_t token_cycle_bytes, uint32_t points = k_hit_curve_points);
 
+// The (layer, expert) pairs the trace decoded, the most often first, as (layer << 16) | expert, with their
+// bytes summed in that order: what a device expert cache warmed at load should hold to miss least on this
+// model's own routing. The decoded tokens only, where the trace has any, since a prompt's wide batches touch
+// most experts once; ties keep the order of layer then expert, so the same trace gives the same list.
+ModelProfile::HotExperts hottest_experts(const RoutingTrace & trace);
+
 // Check that `trace` describes this model routed at `n_expert_used` (the run's effective top-k), and
 // set `model.hit_curve` from it. A trace that does not fit leaves the curve absent with the reason in
 // `model.hit_curve.rejected`, so the plan is the one it would be without a trace.

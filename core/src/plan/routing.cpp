@@ -10,12 +10,48 @@
 #include <cstdlib>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <tuple>
 #include <utility>
 
 namespace bmoe {
+
+ModelProfile::HotExperts hottest_experts(const RoutingTrace & trace) {
+    ModelProfile::HotExperts out;
+    if (trace.n_expert == 0 || trace.n_expert > 0xffff || trace.n_layer > 0xffff) return out;
+    const bool decoded =
+        std::any_of(trace.batches.begin(), trace.batches.end(), [](const RoutingBatch & b) { return b.decode; });
+    std::vector<uint64_t> count((size_t) trace.n_layer * trace.n_expert, 0);
+    for (const RoutingBatch & b : trace.batches) {
+        if ((decoded && !b.decode) || b.layer >= trace.n_layer) continue;
+        for (const int32_t e : b.experts)
+            if (e >= 0 && (uint32_t) e < trace.n_expert) ++count[(size_t) b.layer * trace.n_expert + (size_t) e];
+    }
+    auto keys = std::make_shared<std::vector<uint32_t>>();
+    for (size_t i = 0; i < count.size(); ++i)
+        if (count[i] > 0) keys->push_back((uint32_t) ((i / trace.n_expert) << 16 | (i % trace.n_expert)));
+    std::stable_sort(keys->begin(), keys->end(), [&](uint32_t a, uint32_t b) {
+        return count[(size_t) (a >> 16) * trace.n_expert + (a & 0xffff)] >
+               count[(size_t) (b >> 16) * trace.n_expert + (b & 0xffff)];
+    });
+    uint64_t sum = 0;
+    for (const uint32_t k : *keys) {
+        const uint32_t il = k >> 16;
+        sum += il < trace.expert_bytes.size() ? trace.expert_bytes[il] : 0;
+        out.cum_bytes.push_back(sum);
+    }
+    out.keys = std::move(keys);
+    return out;
+}
+
+uint64_t ModelProfile::HotExperts::held_bytes(uint64_t cache, size_t * n) const {
+    const auto it = std::upper_bound(cum_bytes.begin(), cum_bytes.end(), cache);
+    const size_t k = (size_t) (it - cum_bytes.begin());
+    if (n) *n = k;
+    return k ? cum_bytes[k - 1] : 0;
+}
 
 uint64_t RoutingTrace::expert_set_bytes() const {
     std::vector<bool> seen(expert_bytes.size(), false);
@@ -468,6 +504,7 @@ void attach_routing(ModelProfile & m,
                     const std::vector<uint32_t> & verify_widths) {
     m.hit_curve = HitCurve{};
     m.verify_curves.clear();
+    m.hottest = {};
     auto reject = [&](std::string why) { m.hit_curve.rejected = std::move(why); };
     if (t.empty()) return reject("the stored routing trace is empty");
     if (!m.ok || !m.is_moe) return reject("the model has no routed experts to price a cache for");
@@ -494,6 +531,7 @@ void attach_routing(ModelProfile & m,
                       " MiB");
     m.hit_curve = hit_curve(t, k_hit_curve_points, half_life);
     if (!m.hit_curve.measured) return reject("the trace has no decoded tokens");
+    m.hottest = hottest_experts(t);
     for (uint32_t w : verify_widths) {
         if (w < 2) continue;
         VerifyCurve v;

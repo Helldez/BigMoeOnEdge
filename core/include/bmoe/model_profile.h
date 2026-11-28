@@ -26,6 +26,7 @@
 #include "bmoe/measured_knobs.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -265,6 +266,16 @@ struct ModelProfile {
     // The same record replayed as verifies of the widths the plan may draft at, narrowest first; empty
     // without a record, and the plan then bounds a verify from the token cycle (draft pricing).
     std::vector<VerifyCurve> verify_curves;
+    // The experts the same record decoded, the most often first, as (layer << 16) | expert, and the
+    // bytes of the first i + 1 of them: what a device expert cache warmed at load holds, hottest first,
+    // up to its size (hottest_experts, cache warming). Empty without a record.
+    struct HotExperts {
+        std::shared_ptr<const std::vector<uint32_t>> keys;
+        std::vector<uint64_t> cum_bytes;
+        bool empty() const { return !keys || keys->empty(); }
+        // The bytes of the hottest experts a cache of `cache` bytes holds, and how many they are.
+        uint64_t held_bytes(uint64_t cache, size_t * n = nullptr) const;
+    } hottest;
 
     // What an earlier load of this model measured about its lossless knobs on this machine and this
     // engine (bmoe/measured_knobs.h), the record a front-end kept and probe_and_plan matched by

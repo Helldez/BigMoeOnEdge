@@ -4267,6 +4267,71 @@ int main() {
                   std::to_string(made.config.buft_overrides.size()) + " overrides");
         }
 
+        // A device expert cache warmed at load from the model's routing record, where its cold misses are
+        // first touches and the fill costs no more than they would; the load that times the cache side is
+        // warm too, so the side is timed as it serves.
+        {
+            const auto with_record = [&](double hit, uint64_t set) {
+                ModelProfile w = model;
+                w.hit_curve.measured = true;
+                w.hit_curve.decode_tokens = 256;
+                w.hit_curve.points = {{0, 0.0}, {1 * MiB, hit}};
+                auto keys = std::make_shared<std::vector<uint32_t>>();
+                const uint64_t each = 4 * MiB;
+                for (uint64_t b = each, i = 0; b <= set; b += each, ++i) {
+                    keys->push_back((uint32_t) ((i % model.n_layer) << 16 | (i / model.n_layer)));
+                    w.hottest.cum_bytes.push_back(b);
+                }
+                w.hottest.keys = keys;
+                return w;
+            };
+            const uint64_t routed = model.group(WeightGroup::Experts).bytes_per_token;
+            // Cold, 2% of 256 tokens' experts missed: fewer bytes than the record decoded, so first touches.
+            const ModelProfile touches = with_record(0.98, std::max<uint64_t>(8 * GiB, 6 * routed));
+            const Plan on = plan_run(base_cfg(), card, touches, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dw = find(on, "device-cache-warm");
+            check(on.config.moe.device_cache_mb > 0 && on.config.moe.device_cache_warm &&
+                      on.config.moe.device_cache_warm_experts == touches.hottest.keys && dw && dw->value == "on" &&
+                      on.config.trial.device_tier == 1,
+                  "cache warm: first touches, the cache side's timed load starts warm", dw ? dw->reason : "none");
+            // Half of them missed, from a small decoded set: the misses are the cache's size.
+            const ModelProfile capacity = with_record(0.5, 64 * MiB);
+            const Plan size = plan_run(base_cfg(), card, capacity, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(size, "device-cache-warm");
+            check(!size.config.moe.device_cache_warm && !size.config.moe.device_cache_warm_experts && dw &&
+                      dw->value == "off",
+                  "cache warm: misses of a cache too small for its routing, no warm", dw ? dw->reason : "none");
+            // The last warm here filled far slower than the misses' path: its measured rate decides.
+            ModelProfile slow = touches;
+            slow.knobs.warm_experts = 100;
+            slow.knobs.warm_s = 60.0;
+            const Plan sl = plan_run(base_cfg(), card, slow, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(sl, "device-cache-warm");
+            check(!sl.config.moe.device_cache_warm && dw && dw->source == Source::Measured,
+                  "cache warm: a fill measured slower than what it saves is not made", dw ? dw->reason : "none");
+            // A cache lent to a prompt empties before the first answer.
+            RunConfig lend = base_cfg();
+            lend.moe.device_cache_lend = true;
+            PlanRequest lent;
+            lent.pinned = {"device-cache-lend"};
+            const Plan le = plan_run(lend, card, touches, half, lent, PlannerPolicy::defaults());
+            check(le.config.moe.device_cache_mb > 0 && !le.config.moe.device_cache_warm,
+                  "cache warm: a cache lent to prompts is not warmed");
+            // The caller's choice stands; set on, the record's list is what it warms with.
+            RunConfig mine = base_cfg();
+            mine.moe.device_cache_warm = true;
+            PlanRequest pinned;
+            pinned.pinned = {"device-cache-warm"};
+            const Plan pi = plan_run(mine, card, capacity, half, pinned, PlannerPolicy::defaults());
+            check(pi.config.moe.device_cache_warm && pi.config.moe.device_cache_warm_experts == capacity.hottest.keys &&
+                      !find(pi, "device-cache-warm"),
+                  "cache warm: pinned on, the record's experts are what it warms with");
+            // No record: nothing to warm with, and nothing said.
+            const Plan none = plan_run(base_cfg(), card, model, half, PlanRequest{}, PlannerPolicy::defaults());
+            check(!none.config.moe.device_cache_warm && !find(none, "device-cache-warm"),
+                  "cache warm: no record, no warm");
+        }
+
         // The projector goes on the device with every layer: its bytes come off the card's spare
         // before the cache does, and the host's ledger has no row for it.
         {

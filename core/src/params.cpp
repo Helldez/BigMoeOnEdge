@@ -630,6 +630,21 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d =
+            row("device-cache-warm", "Device cache warmed at load", G::Cache, L::Experimental,
+                "Fill the device expert cache at load with the experts this model's own routing record "
+                "decoded most often, hottest first, so a short session does not upload them on first use. "
+                "Set by the hardware planner where the record says the cache's cold misses are first touches; "
+                "needs the record, which --auto reads.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--device-cache-warm", "true"}, {"--no-device-cache-warm", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_warm; });
+        d.details = "Experimental: the graphics card's expert cache starts with what this model used most last "
+                    "time.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d =
             row("device-cache-read-ahead", "Device cache read-ahead", G::Cache, L::Experimental,
                 "With a device expert cache, the experts per token of the next layer, "
                 "named by its router on this layer's input, that are brought into the cache while this "

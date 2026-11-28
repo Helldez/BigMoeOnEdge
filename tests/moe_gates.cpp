@@ -86,7 +86,9 @@
 //       streamed experts (b) and streamed under n-gram speculation (c), and over resident experts
 //       with half the cache's misses computed on the host (d), each == the resident placement; and
 //       each side of the device tier timed for a decision across loads (e), with its rate in the
-//       record.
+//       record; and warmed at load with more experts than it holds (w), == the resident placement.
+//       G25h: the same on a device whose memory the host writes in place, read ahead, with host
+//       calls, lent to a prompt, and warmed at load (d).
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //   G28 the answer check of a model held whole on a device (KnobTrialConfig::answer_device): answers
@@ -283,6 +285,30 @@ static bool gen(const RunConfig & c, std::string & out, std::string & err) {
         return false;
     }
     out = r.generated_text;
+    return true;
+}
+
+// Every expert of every block, as a device expert cache warmed at load takes them ((layer << 16) | expert, in
+// order): more than a small cache holds, so the warm fills it to its last slot and stops there.
+static std::shared_ptr<const std::vector<uint32_t>> every_expert(const std::string & model) {
+    const GgufModelInfo info = read_gguf_model_info(model.c_str());
+    auto keys = std::make_shared<std::vector<uint32_t>>();
+    for (int il = 0; il < info.n_block; ++il)
+        for (int e = 0; e < info.n_expert; ++e)
+            keys->push_back((uint32_t) il << 16 | (uint32_t) e);
+    return keys;
+}
+
+// A run warmed at load (MoeStreamConfig::device_cache_warm): its text, and whether the warm filled any
+// slot, since identity alone would pass if it had filled none.
+static bool gen_warm(const RunConfig & c, std::string & out, bool & warmed, std::string & err) {
+    RunResult r = run(c);
+    if (!r) {
+        err = r.error;
+        return false;
+    }
+    out = r.generated_text;
+    warmed = r.knobs.warm_experts > 0;
     return true;
 }
 
@@ -2059,6 +2085,22 @@ int main(int argc, char ** argv) {
                 fails += check("G25h a) device cache filled in place, read ahead == model held whole", s_whole, s_a);
                 fails += check("G25h b) the same with host calls == model held whole", s_whole, s_b);
                 fails += check("G25h c) the same lent to a wide prompt == model held whole", s_whole_w, s_c);
+                // d) warmed at load, in place, with more experts than it holds, then read ahead as in a).
+                RunConfig filled_warm = filled;
+                filled_warm.moe.device_cache_warm = true;
+                filled_warm.moe.device_cache_warm_experts = every_expert(model);
+                std::string s_d;
+                bool warmed = false;
+                if (!gen_warm(filled_warm, s_d, warmed, err)) {
+                    std::printf("[FAIL] G25h d) a warmed run on %s failed: %s\n", dev_name.c_str(), err.c_str());
+                    ++fails;
+                } else {
+                    fails += check("G25h d) the same warmed at load == model held whole", s_whole, s_d);
+                    if (!warmed) {
+                        std::printf("[FAIL] G25h d) the warm filled no slot\n");
+                        ++fails;
+                    }
+                }
             }
         }
     }
@@ -2122,6 +2164,25 @@ int main(int argc, char ** argv) {
                 } else {
                     fails += check("G25a device cache over resident experts == resident experts", s_placed, s_cached);
                     fails += check("G25b device cache over streamed experts == resident experts", s_placed, s_cached_s);
+                    // w) warmed at load with more experts than it holds: the slots the warm uploads are the
+                    // experts' own bytes, and the misses after it are filled as before.
+                    {
+                        RunConfig warm = cached;
+                        warm.moe.device_cache_warm = true;
+                        warm.moe.device_cache_warm_experts = every_expert(model);
+                        std::string s_warm;
+                        bool warmed = false;
+                        if (!gen_warm(warm, s_warm, warmed, err)) {
+                            std::printf("[FAIL] G25w a warmed device cache run failed: %s\n", err.c_str());
+                            ++fails;
+                        } else {
+                            fails += check("G25w device cache warmed at load == resident experts", s_placed, s_warm);
+                            if (!warmed) {
+                                std::printf("[FAIL] G25w the warm filled no slot\n");
+                                ++fails;
+                            }
+                        }
+                    }
                     // d) part of the misses computed on the host from the resident copy instead of
                     // uploaded: llama.cpp builds the layer's experts on both and adds the halves, each
                     // weighted only for the experts it computed. The 4 MiB cache is full within the

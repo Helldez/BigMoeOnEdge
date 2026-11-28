@@ -559,6 +559,12 @@ model, `no_spec_tps` without; each draft's acceptance and width, `spec_accept`/`
 being created with the target's,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
+The record also keeps what the last warm of a device expert cache cost (`warm_experts`, `warm_s`), not a
+side but the rate the next plan prices a warm at
+([hardware-planning.md](hardware-planning.md#a-device-expert-cache-warmed-at-load)). Whatever side a load
+times, it is kept at what it decoded less the rate probe's settling window, so both sides are compared once
+their cache is warm.
+
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
 word per device). The load that moves the model compares them before it serves and reopens on the
