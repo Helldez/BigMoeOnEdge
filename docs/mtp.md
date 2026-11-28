@@ -215,7 +215,19 @@ Speculation requires greedy decoding: `validate()` rejects `--mtp` together with
 because acceptance under a sampling chain would depend on which draws happened to agree and the run
 would no longer be the single-token run it claims to be. A penalty (`--presence-penalty`,
 `--frequency-penalty`, `--repeat-penalty`) is rejected with it too, at any temperature: it moves the
-answer off the model's own most likely token, which is what a draft is checked against.
+answer off the model's own most likely token, which is what a draft is checked against. A request that
+asks for sampling of its own (a temperature above 0, a penalty, a bias) is therefore decoded without a
+draft, its sampling applied. The draft context then misses that turn, so the conversation goes on
+without a draft until the next new chat, as it does once it holds an image.
+
+## Under `--auto`
+
+The plan arms the model's own head where a verify's reads stay in memory and the front-end keeps
+records: the model held whole, or served from a device expert cache that holds a verify's experts
+(experimental). It keeps the head only where it decodes faster: one load times it with the head and one
+without, and the head stays where it wins by 10%. It drafts 3 tokens (`PlannerPolicy::draft_tokens`)
+unless `--draft` is typed. Where the model streams on the cores it is never offered, for the reason above
+([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
 ## How it is wired
 

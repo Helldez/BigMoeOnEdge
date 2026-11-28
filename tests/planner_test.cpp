@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <tuple>
 
 using namespace bmoe;
 
@@ -567,6 +568,85 @@ int main() {
         check(q.regime == Regime::Fits && !q.config.moe.overlap && !q.config.moe.row_stream && o && o->value == "off",
               "roomy machine, overlap asked: off with a note, not a refusal", o ? o->reason : "no decision");
         check(validate(q.config).ok, "roomy machine, overlap asked: a valid config", validate(q.config).error);
+    }
+
+    // ── the model's own draft head, decided across loads where the model is held whole ──────────
+    {
+        HardwareProfile big = desktop();
+        big.residency_budget = 64 * GiB;
+        big.memory_total = 64 * GiB;
+        ModelProfile headed = model;
+        headed.has_mtp = true;
+        PlanRequest keep;
+        keep.measure_knobs = true;
+        const auto spec_of = [](const Plan & p) { return find(p, "spec"); };
+
+        // No record kept, no head, or a streamed model: nothing is armed and nothing is said.
+        {
+            const Plan a = plan_run(base_cfg(), big, headed, PlanRequest{});
+            const Plan b = plan_run(base_cfg(), big, model, keep);
+            HardwareProfile small = desktop();
+            const Plan c = plan_run(base_cfg(), small, headed, keep);
+            check(!a.config.spec.enabled() && !spec_of(a), "draft head: a front-end that keeps no record arms none");
+            check(!b.config.spec.enabled() && !spec_of(b), "draft head: a model without one arms none");
+            check(c.config.moe.enabled && !c.config.spec.enabled() && !spec_of(c),
+                  "draft head: a streamed model arms none (a verify widens its reads)");
+        }
+        // Nothing timed: this load drafts and times it.
+        {
+            const Plan p = plan_run(base_cfg(), big, headed, keep);
+            const Decision * d = spec_of(p);
+            check(p.config.spec.is_mtp() && p.config.trial.spec_side == 1 && d && d->value == "mtp" &&
+                      d->source == Source::Derived,
+                  "draft head, unmeasured: the load drafts and times it", d ? d->reason : "no decision");
+            check(validate(p.config).ok, "draft head, unmeasured: a valid config", validate(p.config).error);
+        }
+        // The head timed: the next load times the decode without it.
+        {
+            ModelProfile m = headed;
+            m.knobs.spec_tps = 30.0;
+            const Plan p = plan_run(base_cfg(), big, m, keep);
+            check(!p.config.spec.enabled() && p.config.trial.spec_side == 0 && validate(p.config).ok,
+                  "draft head, one side timed: the other side is timed next");
+        }
+        // Both timed: kept only past the margin.
+        for (const auto & c : {std::make_tuple(36.0, 30.0, true), std::make_tuple(32.0, 30.0, false),
+                               std::make_tuple(25.0, 30.0, false)}) {
+            ModelProfile m = headed;
+            m.knobs.spec_tps = std::get<0>(c);
+            m.knobs.no_spec_tps = std::get<1>(c);
+            const Plan p = plan_run(base_cfg(), big, m, keep);
+            const Decision * d = spec_of(p);
+            const bool kept = std::get<2>(c);
+            check(p.config.spec.is_mtp() == kept && p.config.trial.spec_side < 0 && d &&
+                      d->source == Source::Measured && validate(p.config).ok,
+                  "draft head, " + std::to_string((int) std::get<0>(c)) + " against " +
+                      std::to_string((int) std::get<1>(c)) + ": " + (kept ? "kept" : "off"),
+                  d ? d->reason : "no decision");
+        }
+        // A side that failed to open as often as a plan allows loses.
+        {
+            ModelProfile m = headed;
+            m.knobs.spec_unviable = MeasuredKnobs::unviable_max;
+            const Plan p = plan_run(base_cfg(), big, m, keep);
+            check(!p.config.spec.enabled() && p.config.trial.spec_side < 0,
+                  "draft head, failed to open: no draft, and nothing timed");
+        }
+        // A pinned draft, or a session that samples, is the person's: the rule does not arm one.
+        {
+            RunConfig hot = base_cfg();
+            hot.sampling.temp = 0.7f;
+            PlanRequest pinned = keep;
+            pinned.pinned = {"temp"};
+            const Plan p = plan_run(hot, big, headed, pinned);
+            const Decision * d = spec_of(p);
+            check(!p.config.spec.enabled() && validate(p.config).ok && d && d->value == "off",
+                  "draft head, a sampling session: no draft, and the plan says why", d ? d->reason : "no decision");
+            PlanRequest off = keep;
+            off.pinned = {"spec"};
+            const Plan q = plan_run(base_cfg(), big, headed, off);
+            check(!q.config.spec.enabled() && q.config.trial.spec_side < 0, "draft head, spec pinned off: left off");
+        }
     }
 
     // ── the budget is what we can KEEP, not what is reported available ──────────────
@@ -4917,6 +4997,229 @@ int main() {
             check(!unlent.config.moe.device_cache_lend &&
                       unlent.config.graph_width() == unlent.config.fallback->graph_width(),
                   "shared cache: lending typed off keeps the stream's width");
+        }
+    }
+
+    // ── a draft where the plan serves from a device expert cache ──
+    // The draft rule asks the plan as it will serve: a device expert cache that holds a verify's experts
+    // keeps the verify's reads in memory as a model held whole does, so the model's own head is timed and
+    // kept there by the same verdict. Every other decision across loads is settled in the record, so the
+    // draft is the one this load times.
+    {
+        HardwareProfile uma = unified();
+        uma.host_bandwidth_gibs = 60.0;
+        ComputeDevice & acc = uma.devices[1];
+        acc.usable = Tri::Yes;
+        acc.runs_expert_op = Tri::Yes;
+        acc.identity_ok = Tri::Yes;
+        acc.memory_bandwidth_gibs = 120.0;
+        Placement pl;
+        pl.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            pl.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        pl.compute_width = 8192;
+        pl.host_compute_per_token = 256 * KiB;
+        pl.raw_host_compute_bytes = 8192ull * 256 * KiB;
+        pl.n_ctx = 16384;
+        RunConfig long_ctx = base_cfg();
+        long_ctx.n_ctx = 16384;
+        ModelProfile settled = model;
+        settled.knobs.device_cache_tps = 40.0; // the cache side timed, and faster than the stream's price
+        settled.knobs.set_device_answer(acc.name, 1);
+        ModelProfile headed = settled;
+        headed.has_mtp = true;
+        PlanRequest keep;
+        keep.measure_knobs = true;
+        const auto plan_on = [&](const RunConfig & c, const ModelProfile & m, const PlanRequest & r) {
+            return plan_run(c, uma, m, pl, r, PlannerPolicy::defaults());
+        };
+        const auto on_cache = [](const Plan & p) { return p.config.moe.device_cache_mb > 0 && !p.config.moe.enabled; };
+
+        // Unmeasured: this load drafts, at the policy's width, and times it.
+        const Plan first = plan_on(long_ctx, headed, keep);
+        const Decision * d = find(first, "spec");
+        check(on_cache(first) && first.config.spec.is_mtp() && first.config.trial.spec_side == 1 && d &&
+                  d->value == "mtp" && first.config.spec.draft_max == PlannerPolicy::defaults().draft_tokens &&
+                  validate(first.config).ok,
+              "device-cache draft: a cache holding a verify drafts with the model's head, and times it",
+              d ? d->reason : "no decision");
+        check(!first.config.fallback || !first.config.fallback->spec.enabled(),
+              "device-cache draft: the stream behind the device does not draft");
+
+        // No head: nothing armed, nothing said.
+        const Plan headless = plan_on(long_ctx, settled, keep);
+        check(on_cache(headless) && !headless.config.spec.enabled() && !find(headless, "spec") &&
+                  headless.config.trial.spec_side < 0,
+              "device-cache draft: a model without a head arms none");
+        check(first.config.moe.device_cache_mb == headless.config.moe.device_cache_mb,
+              "device-cache draft, shared memory: the cache is not charged for the draft (the host's ledger is)");
+
+        // Both sides measured: a draft slower, or inside the margin, is turned off; past it, kept.
+        for (const auto & c : {std::make_tuple(20.0, 24.0, false), std::make_tuple(25.0, 24.0, false),
+                               std::make_tuple(34.6, 24.2, true)}) {
+            ModelProfile m = headed;
+            m.knobs.spec_tps = std::get<0>(c);
+            m.knobs.no_spec_tps = std::get<1>(c);
+            const Plan p = plan_on(long_ctx, m, keep);
+            const Decision * e = find(p, "spec");
+            const bool kept = std::get<2>(c);
+            check(on_cache(p) && p.config.spec.is_mtp() == kept && p.config.trial.spec_side < 0 && e &&
+                      e->source == Source::Measured && e->value == (kept ? "mtp" : "off"),
+                  std::string("device-cache draft, measured ") + (kept ? "faster: kept" : "not faster: off"),
+                  e ? e->reason : "no decision");
+        }
+
+        // A draft typed by hand is the person's: kept as typed, the rule silent. A width typed alone is
+        // the width the rule arms.
+        {
+            RunConfig typed = long_ctx;
+            typed.spec.source = DraftSource::mtp;
+            typed.spec.draft_max = 5;
+            PlanRequest pinned = keep;
+            pinned.pinned = {"spec", "draft"};
+            const Plan p = plan_on(typed, headed, pinned);
+            check(p.config.spec.is_mtp() && p.config.spec.draft_max == 5 && p.config.trial.spec_side < 0 &&
+                      !find(p, "spec"),
+                  "device-cache draft: a typed --mtp and --draft are kept");
+            RunConfig width = long_ctx;
+            width.spec.draft_max = 2;
+            PlanRequest width_only = keep;
+            width_only.pinned = {"draft"};
+            const Plan w = plan_on(width, headed, width_only);
+            check(w.config.spec.is_mtp() && w.config.spec.draft_max == 2 && w.config.trial.spec_side == 1,
+                  "device-cache draft: a typed --draft alone is the width armed",
+                  std::to_string(w.config.spec.draft_max));
+        }
+
+        // A cache that holds a token but not a verify's union: no draft. The model's token cycle is set
+        // to half the cache this plan gives it, so the cache rule still serves and a verify of 1 + 3
+        // tokens is twice what the cache holds.
+        {
+            const uint64_t cache = (uint64_t) first.config.moe.device_cache_mb << 20;
+            ModelProfile wide = headed;
+            wide.token_cycle_bytes = cache / 2;
+            const Plan p = plan_on(long_ctx, wide, keep);
+            const uint64_t got = (uint64_t) p.config.moe.device_cache_mb << 20;
+            const bool shaped = on_cache(p) && got >= wide.token_cycle_bytes && got < 4 * wide.token_cycle_bytes;
+            check(shaped && !p.config.spec.enabled() && !find(p, "spec"),
+                  "device-cache draft: a cache under a verify's union arms none",
+                  std::to_string(p.config.moe.device_cache_mb) + " MiB cache, cycle " +
+                      std::to_string(wide.token_cycle_bytes >> 20) + " MiB");
+        }
+
+        // The stream on the cores: a verify widens its reads from the file, so no draft is offered.
+        {
+            PlanRequest stream = keep;
+            stream.pinned = {"moe-stream"};
+            RunConfig streamed = long_ctx;
+            streamed.moe.enabled = true;
+            const Plan p = plan_on(streamed, headed, stream);
+            check(p.config.moe.enabled && p.config.moe.device_cache_mb == 0 && !p.config.spec.enabled() &&
+                      !find(p, "spec"),
+                  "device-cache draft: the stream on the cores arms none");
+        }
+    }
+
+    // ── a draft on a card with memory of its own, served from its device expert cache ──
+    {
+        HardwareProfile card = desktop();
+        card.residency_budget = 80 * GiB;
+        card.memory_total = 125 * GiB;
+        card.host_bandwidth_gibs = 4.0; // slow cores: the device tier serves (the device-tier test above)
+        ComputeDevice & gpu = card.devices[0];
+        gpu.memory_total = 24 * GiB;
+        gpu.memory_free = 23 * GiB;
+        gpu.usable = Tri::Yes;
+        gpu.runs_expert_op = Tri::Yes;
+        gpu.identity_ok = Tri::Yes;
+        gpu.memory_bandwidth_gibs = 881.0;
+        gpu.upload_gibs = 24.0;
+        gpu.split_seconds = 20e-6;
+        Placement half;
+        half.fitted = true;
+        half.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < 24; ++il)
+            half.host_expert_layers.push_back(il);
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            half.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        half.override_patterns.assign(half.all_expert_patterns.begin(), half.all_expert_patterns.begin() + 24);
+        half.device_bytes = 9 * GiB + 3 * GiB;
+        ModelProfile headed = model;
+        headed.has_mtp = true;
+        headed.knobs.device_cache_tps = 40.0;
+        headed.knobs.no_device_cache_tps = 20.0;
+        PlanRequest keep;
+        keep.measure_knobs = true;
+        const Plan p = plan_run(base_cfg(), card, headed, half, keep, PlannerPolicy::defaults());
+        const Decision * d = find(p, "spec");
+        check(p.config.moe.device_cache_mb > 0 && p.config.spec.is_mtp() && p.config.trial.spec_side == 1 &&
+                  validate(p.config).ok,
+              "device-cache draft, a card: its expert cache holding a verify drafts, and times it",
+              d ? d->reason : "no decision");
+
+        // The draft's own bytes on the card: its weights (the head's block inside the file), one block's
+        // share of the target's KV there, and the target's compute moved to the width a draft context is
+        // reserved at. None is in the fitter's placement, so a cache sized without them fills the card the
+        // draft then needs (a 24 GB card ran out of memory reserving a draft of 3 beside a 15.2 GB cache).
+        Placement busy = half;
+        busy.device_context_bytes = 4 * GiB;
+        busy.device_compute_bytes = 2 * GiB;
+        busy.compute_width = 512;
+        busy.device_compute_per_token = 2 * MiB;
+        ModelProfile block = headed;
+        block.mtp_block_bytes = 1 * GiB;
+        const uint32_t width =
+            (uint32_t) std::max(1 + PlannerPolicy::defaults().draft_tokens, SpecConfig::mtp_draft_ubatch);
+        const uint64_t charge = block.mtp_block_bytes + busy.device_context_bytes / model.n_layer +
+                                busy.at_width(width).device_compute_bytes;
+        ModelProfile no_head = block;
+        no_head.has_mtp = false;
+        const Plan bare = plan_run(base_cfg(), card, no_head, busy, keep, PlannerPolicy::defaults());
+        const int whole = bare.config.moe.device_cache_mb;
+        check(whole > 0 && !bare.config.spec.enabled(), "draft on a card: without a draft the cache is whole",
+              std::to_string(whole) + " MiB");
+        const auto shrunk_by = [&](const Plan & q) { return (uint64_t) (whole - q.config.moe.device_cache_mb) << 20; };
+        const auto near = [](uint64_t a, uint64_t b) { return (a > b ? a - b : b - a) <= MiB; }; // MiB rounding
+
+        // The plan arms the head: the cache gives the draft its bytes.
+        const Plan armed = plan_run(base_cfg(), card, block, busy, keep, PlannerPolicy::defaults());
+        const Decision * da = find(armed, "spec");
+        const Decision * dc = find(armed, "device-cache-mb");
+        check(armed.config.spec.is_mtp() && near(shrunk_by(armed), charge) && dc &&
+                  dc->value == std::to_string(armed.config.moe.device_cache_mb) && da &&
+                  da->reason.find("gives the draft") != std::string::npos,
+              "draft on a card, armed by the plan: the cache shrinks by the draft's bytes",
+              std::to_string(armed.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole) + ", charge " +
+                  std::to_string(charge >> 20) + " MiB");
+        // The side timed without the draft keeps the whole cache.
+        {
+            ModelProfile timed = block;
+            timed.knobs.spec_tps = 30.0;
+            const Plan off = plan_run(base_cfg(), card, timed, busy, keep, PlannerPolicy::defaults());
+            check(!off.config.spec.enabled() && off.config.trial.spec_side == 0 &&
+                      off.config.moe.device_cache_mb == whole,
+                  "draft on a card, the side without it timed: the cache is whole");
+        }
+        // A draft typed by hand is charged before the cache is sized.
+        {
+            RunConfig typed = base_cfg();
+            typed.spec.source = DraftSource::mtp;
+            typed.spec.draft_max = PlannerPolicy::defaults().draft_tokens;
+            PlanRequest pinned;
+            pinned.pinned = {"spec", "draft"};
+            const Plan q = plan_run(typed, card, block, busy, pinned, PlannerPolicy::defaults());
+            check(q.config.spec.is_mtp() && near(shrunk_by(q), charge),
+                  "draft on a card, typed by hand: the cache shrinks by the draft's bytes",
+                  std::to_string(q.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole));
+        }
+        // A drafter's context as the front-end that opens one states it, in place of the derivation.
+        {
+            ModelProfile stated = block;
+            stated.draft_context_bytes = 1300 * MiB;
+            const Plan q = plan_run(base_cfg(), card, stated, busy, keep, PlannerPolicy::defaults());
+            check(q.config.spec.is_mtp() && near(shrunk_by(q), stated.mtp_block_bytes + stated.draft_context_bytes),
+                  "draft on a card: a stated draft context is what the cache gives",
+                  std::to_string(q.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole));
         }
     }
 

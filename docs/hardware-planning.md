@@ -1422,6 +1422,70 @@ the prompt on the probes' wide matmul as before. A served load then keeps its ow
 (`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
+### A model held in memory, drafting with its own head
+
+A model that carries its own MTP block can draft the next tokens and verify them in one decode
+([mtp.md](mtp.md)). Whether that pays depends on the machine, and no probe can tell. A verify computes
+several positions at once, and on a mixture of experts each position routes on its own, so a verify
+reads the union of their experts:
+- **Streamed from the file:** a token's reads went from 32 to 51 MiB on a 16 GB laptop, and the draft
+  lost. The plan does not offer a draft to a model it streams on the cores.
+- **Held whole on a GPU:** a step costs little more for a few extra positions, and the head paid about
+  18% on a rented 24 GB card with the model resident (75.5 → 89.4 tok/s), and about 40% split between
+  a card and the host.
+- **Served from a device expert cache that holds a verify:** on a 16 GB unified-memory laptop serving
+  Qwen3.6-35B Q4_K_M from the device cache (experimental, [above](#a-streamed-model-on-a-device-that-shares-memory)),
+  the decode went from 24.2 to 34.6 tok/s with the head drafting 3 tokens, and to 37.7 with a separate
+  drafter. 8 tokens was slower than 3.
+- **Held whole on the cores alone:** the step reads that union at the memory's own rate, and nobody
+  has measured it.
+
+So the draft is a decision across loads (`choose_spec`). It is asked on the plan as it will serve, after
+every other rule, and only where:
+- the model has a draft: its own head today (`draft_source`). A separate drafter's file
+  (`ModelProfile::draft_file_bytes`) is a source this engine cannot open yet, and joins there when it
+  can;
+- the side keeps a verify's reads in memory (`verify_reads_held`): the model held whole, or a device
+  expert cache that holds `1 + draft` token cycles (`token_cycle_bytes`), the most a verify's union can
+  read, on a device that shares the host's memory or on a card with memory of its own;
+- the front-end keeps records, the session decodes greedily (`temp` 0), and `spec`, `mtp-head` and
+  `trial-spec` are not pinned.
+
+The width is `PlannerPolicy::draft_tokens` (3, the measured best above). A `--draft` typed by hand is
+the width armed instead, and a typed `--mtp` leaves the rule silent. Then:
+- **No side timed:** the load drafts (`spec = mtp`) and times its decode (`--trial-spec 1`).
+- **Only the draft timed:** the next load times the decode without it (`--trial-spec 0`).
+- **Both timed:** the draft stays only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
+  It is not free when it does not win: its draft context holds memory beside the model.
+
+A load whose draft fails to open counts against that side (`spec_unviable`), and the server reopens
+the other side; twice, and the draft is off for that model on that machine. The rates are kept as
+`MeasuredKnobs::spec_tps` and `no_spec_tps`, one pair per model and machine, whichever side served
+them. Only one decision is timed per load: a load that times the shared-memory device, the device
+cache or the graph width, or checks the device's answers, leaves the draft for a later load. On the
+device-cache side the first load that drafts is the second at the soonest: the first times the cache
+and checks its answers. The stream kept behind a device cache as its fallback never drafts.
+
+**The draft's bytes on a card.** A draft opens as a context of its own after the target, so none of it
+is in the fitter's placement. On a rented 24 GB card, a 15.2-15.6 GB device expert cache left no room
+for a draft of 3, and the session ran out of device memory reserving it (about 800 MiB of the target's
+layer input for the drafter, and 500 MiB more compute). Where the device's memory is its own, the draft
+is charged against the device expert cache (`draft_device_bytes`):
+- **weights:** the head's block inside the file (`ModelProfile::mtp_block_bytes`, which the probe sums
+  over the block's tensors), or a drafter's file (`draft_file_bytes`). A head in a file of its own is
+  placed by its own rule (`mtp-head-on-devices`);
+- **context:** what the front-end that opens the draft states (`ModelProfile::draft_context_bytes`), or
+  else one block's share of the target's KV on the devices plus the target's compute buffer moved to the
+  draft's width (`1 + draft`, at least the width a draft context is reserved at) along the fitter's
+  measured slope.
+
+A draft typed by hand is charged before the cache is sized. One the plan arms takes its bytes from the
+cache, and is not armed where what is left would not hold a verify. The side timed without a draft keeps
+the whole cache, so the two rates compare what each side really serves. Where the device's memory is the
+host's, the host's ledger holds the draft, as before. On a card without a device expert cache the
+fitter's placement does not charge the draft yet: where it does not fit, the load fails to open and
+counts.
+
 **A model the plan streams is offered to the device too, where the device can hold it whole.**
 llama.cpp would hold such a model on the device, and where that fits it can be the faster run by
 far, so the stream has to earn its place against it. After the plan that streams is made

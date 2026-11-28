@@ -67,6 +67,14 @@ namespace bmoe {
 
 namespace {
 
+// Whether a request's sampling could pick a token other than the model's argmax: a temperature above
+// 0, a penalty, or a bias. The cutoffs and the seed only shape a draw, which greedy decoding never
+// makes.
+bool request_moves_choice(const RequestSampling & r) {
+    return (r.temp && *r.temp > 0.0f) || r.repeat_penalty != 1.0f || r.frequency_penalty != 0.0f ||
+           r.presence_penalty != 0.0f || !r.logit_bias.empty();
+}
+
 using detail::batch_fill;
 using detail::PrefillTally;
 
@@ -510,7 +518,11 @@ struct Session::Impl {
     // conversation that has held an image runs without a draft until it is cleared (said once).
     bool media_in_conversation = false;
     bool media_spec_logged = false;
-    // A request's own sampling is not applied while speculation is armed (RequestSampling): said once.
+    // A draft is accepted by the target's argmax, so a request that asks to choose otherwise (a
+    // temperature, a penalty, a bias: request_moves_choice) is decoded without one, and the draft
+    // context, which then misses that turn, sits out the conversation until it is cleared, as it does
+    // for an image (said once).
+    bool sampled_in_conversation = false;
     bool request_sampling_logged = false;
     // What a refused cut of the KV rolls back to (context_checkpoints.h). They describe a prefix of
     // kv, so they go wherever it goes.
@@ -522,6 +534,7 @@ struct Session::Impl {
         kv.clear();
         checkpoints.clear();
         media_in_conversation = false;
+        sampled_in_conversation = false;
     }
     // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, or a
     // sliding window has already let go of what the cut would read (memory_covers), the
@@ -2500,7 +2513,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.spec_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2599,7 +2612,7 @@ void Session::Impl::pause_trial() {
 }
 
 // The side of a decision across loads this load runs (the device tier, the graph width, the device
-// cache's CPU share or the shared-memory device), timed; its rate goes in the result, which the
+// cache's CPU share, the shared-memory device or the draft head), timed; its rate goes in the result, which the
 // front-end keeps, and the plan of a later load reads it against the other side's.
 void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
     RateProbe & r = *trials.rate_probe;
@@ -2609,6 +2622,8 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
+    else if (cfg.trial.spec_side >= 0)
+        std::snprintf(what, sizeof(what), "%s the model's draft head", cfg.trial.spec_side == 1 ? "with" : "without");
     else if (cfg.trial.shared_device_side >= 0)
         std::snprintf(what, sizeof(what), "with every layer on %s",
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
@@ -3229,17 +3244,12 @@ struct Session::Impl::Turn {
         const SamplingConfig & d = im.cfg.sampling;
         // dt:req.sampler
         if (!req.sampling && !d.penalized()) return true;
+        // A turn that drafts asked nothing that moves the choice (prefill turned the draft off for one
+        // that did), and the session's own penalties are refused with speculation (validate): it decodes
+        // greedily, as a draft is checked.
+        if (spec_on) return true;
         static const RequestSampling unset{};
         const RequestSampling & r = req.sampling ? *req.sampling : unset;
-        if (im.cfg.spec.enabled()) {
-            if (!im.request_sampling_logged) {
-                im.request_sampling_logged = true;
-                log_printf(LogLevel::Info, "a request's sampling and the session's penalties are not applied while "
-                                           "speculation is on: a draft is accepted by the model's own argmax, so "
-                                           "the session decodes greedily");
-            }
-            return true;
-        }
         for (const auto & b : r.logit_bias)
             if (b.first < 0 || b.first >= im.n_vocab) {
                 rollback_turn();
@@ -3629,6 +3639,18 @@ struct Session::Impl::Turn {
                 log_printf(LogLevel::Info, "speculation is off for a conversation holding an image: the draft "
                                            "reads tokens, and an image's are embeddings. It is back with a new "
                                            "conversation");
+            }
+            spec_on = false;
+            mtp_on = false;
+        }
+        if (req.sampling && request_moves_choice(*req.sampling)) im.sampled_in_conversation = true;
+        // dt:req.sampled-spec-off
+        if (im.sampled_in_conversation && (spec_on || mtp_on)) {
+            if (!im.request_sampling_logged) {
+                im.request_sampling_logged = true;
+                log_printf(LogLevel::Info, "speculation is off for a conversation whose requests sample: a draft is "
+                                           "accepted by the model's own argmax, so a request's sampling is applied "
+                                           "without one. It is back with a new conversation");
             }
             spec_on = false;
             mtp_on = false;

@@ -72,6 +72,34 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   device is chosen on the second load, its answers 100% the cores' top token, 12.6 tok/s against 11.0; with
   the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
 
+- **`--auto` drafts with a model's own MTP head where a verify's reads stay in memory, and keeps it only
+  where it decodes faster** (#733, brought in from #734 and extended). The plan never armed speculation by
+  itself. It now asks on the plan as it will serve, after every other rule: where the model is held whole,
+  or served from a device expert cache that holds `1 + draft` token cycles (the most a verify's union of
+  experts can read), on a device that shares the host's memory or on a card with memory of its own. Where
+  the model streams on the cores it is not offered: a verify widens the reads from the file, and on a 16 GB
+  laptop that took a token's reads from 32 to 51 MiB and the draft lost. The draft is a decision across
+  loads: the first drafts and times its decode (`--trial-spec 1`), the next times it without
+  (`--trial-spec 0`), and from then on the head is kept only where it decodes faster by
+  `PlannerPolicy::min_draft_win` (10%). It drafts `PlannerPolicy::draft_tokens` (3) tokens per verify unless
+  `--draft` is typed, and a typed `--mtp` leaves the rule silent. Asked only where the front-end keeps
+  records, the session decodes greedily and no other side is being timed; a load whose draft fails to open
+  counts against that side. The rates are `spec_tps` and `no_spec_tps`. On a 16 GB unified-memory laptop
+  serving Qwen3.6-35B Q4_K_M from the device cache, `--mtp --draft 3` typed by hand decoded at 34.6 tok/s
+  against 24.2 without, and 8 tokens was slower than 3; the plan's own path has not run on hardware yet.
+  A separate drafter's file has a place in the model's facts (`ModelProfile::draft_file_bytes`) and joins
+  the rule once this engine opens one
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+- **A draft's bytes are charged on a card before its device expert cache is sized.** On a rented 24 GB card,
+  a 15.2-15.6 GB device cache left no room for a draft of 3, and the session ran out of device memory
+  reserving it. A draft opens after the fitter's placement, so it was in no ledger. Where the device's
+  memory is its own, the draft's weights (the head's block inside the file, now summed by the probe as
+  `mtp_block_bytes`, or a drafter's `draft_file_bytes`) and its context are charged against the cache. The
+  context is what the front-end states (`draft_context_bytes`), or else one block's KV and the target's
+  compute at the draft's width. A draft typed by hand shrinks the cache before it is sized. One the plan
+  arms takes its bytes from the cache, and is not armed where the rest would not hold a verify.
+  Unified-memory devices are unchanged.
+
 ### Changed
 - **Smaller llama.cpp footprint for the device cache, the same behaviour.** The host address of device memory
   the host writes in place is now a function a backend exports through its registry
@@ -79,6 +107,10 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   and the backends that have no such memory are untouched. The read-ahead builds no prediction where it fills
   nothing ahead (a card with memory of its own), instead of paying the next router's product per layer for
   statistics. The cache's lend flag for llama.cpp's own tools is gone (bmoe sets it directly).
+- **A request that samples is decoded with its sampling, without a draft** (from #734). Before, a session
+  that drafted decoded every request greedily and ignored the request's temperature, penalties and bias.
+  Now such a request turns speculation off for its conversation, as an image already did, until the next
+  new chat; a request that asks nothing of the kind still drafts ([mtp.md](docs/mtp.md)).
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.
