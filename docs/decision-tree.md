@@ -396,8 +396,9 @@ flowchart TD
 - when: planning
 - code: `server/http_server.cpp` · `measure_plan`
 - condition: `if (!cfg.spec.enabled() && cfg.spec.drafter_file.empty()) cfg.spec.drafter_file = lib.drafter_for(cfg.model_path);`
-- Where no draft is named, the draft model whose header reads another model's layers and names this
-  model as its base (`drafter_for`) is paired. The plan weighs it (`plan.facts.drafter`, `plan.spec`)
+- Where no draft is named, the folder's one draft model with the model's vocabulary (token count and
+  hash), hidden width and target layers within its blocks (`drafter_for`) is paired; none or several
+  is no choice, and no name decides. The plan weighs it (`plan.facts.drafter`, `plan.spec`)
   and names it in the run only where it arms it.
 
 #### `srv.load.plan-ok` — The plan replaces the plan layer
@@ -594,7 +595,7 @@ flowchart TD
     plan_overlap_prompts["<b>plan.overlap.prompts</b><br/>Overlap would keep prompts off the device"]
     plan_threads["<b>plan.threads</b><br/>Threads"]
     plan_threads_trial["<b>plan.threads.trial</b><br/>Time other thread counts on this load"]
-    plan_spec["<b>plan.spec</b><br/>A model drafts where a verify's reads stay in memory"]
+    plan_spec["<b>plan.spec</b><br/>A model drafts where its verify is priced faster than no draft"]
     plan_spec_sides["<b>plan.spec.sides</b><br/>Which draft, or none: lost, untimed, measured"]
     plan_give_way -->|"cache under one cycle"| plan_give_way_checkpoints
     plan_give_way -->|"still under one cycle"| plan_give_way_ctx
@@ -1175,23 +1176,29 @@ flowchart TD
 - Up to 2 candidates nearest the incumbent, from the core classes' running sums. Candidates the
   sweep already answered are left out.
 
-#### `plan.spec` — A model drafts where a verify's reads stay in memory
+#### `plan.spec` — A model drafts where its verify is priced faster than no draft
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_spec`
 - condition: `if (all.empty() || !req.measure_knobs) return;`
-- condition: `if (!verify_reads_held(a.config, m, draft, a.where)) continue;`
+- condition: `} else if (!verify_reads_held(a.config, m, d, a.where)) {`
 - Asked by `plan_run` on the plan as it will serve, after `plan.host-call`. The model has a draft
   (`draft_options`: its own MTP head, and a draft model the front-end paired with it,
   `ModelProfile::drafter`), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are
   not pinned, no draft is armed, and this load times no other side and checks no device's answers.
   Otherwise → nothing.
-- Each draft is armed as it would run: a draft model names the paired file and goes on the device
-  of a device expert cache (unless `drafter-on-devices` is pinned). On a device with memory of its
-  own the cache first gives the draft its bytes (`draft_device_bytes`: weights, KV, compute and the
-  target's layer input a drafter reads); a draft that leaves less than a verify's cycles is out.
-- `verify_reads_held`: the model held whole, or a device expert cache of at least `1 + draft` token
-  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → that draft is out.
-- The width is `PlannerPolicy::draft_tokens` (3), or a typed `--draft`.
+- Each draft is armed as it would run, at each width it may run at (a typed `--draft`; the width its
+  load was measured at; else `draft_tokens` 3 and `draft_tokens_wide` 5): a draft model names the
+  paired file and goes on the device of a device expert cache (unless `drafter-on-devices` is
+  pinned). On a device with memory of its own the cache first gives the draft its bytes
+  (`draft_device_bytes`).
+- Priced (`step_rates`, `step_seconds`): the verify step of `1 + draft` positions from the routing
+  record replayed as verifies (`ModelProfile::verify_curves`; without a record, the bound of `1 + draft`
+  token cycles), its hits at the device's expert rate and its misses through the miss path, the draft's
+  own pass, and the tokens a verify yields at the acceptance its load measured or the prior
+  (`draft_accept_prior`). The faster width is kept. An untimed draft priced inside the margin over no
+  draft is out.
+- Unpriced (a rate unmeasured) → the coarse bound, `verify_reads_held`: the model held whole, or a
+  device expert cache of `1 + draft` token cycles. Streamed on the cores → no price and no draft.
 - An armed draft that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
   says why.
 

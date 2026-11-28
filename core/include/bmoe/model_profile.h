@@ -99,6 +99,18 @@ struct HitCurve {
     double hit_share(uint64_t cache_bytes) const;
 };
 
+// What a speculative verify of `width` positions asks of an expert cache, replayed from the model's own
+// routing record (attach_routing): the bytes one verify routes through - per layer the union of the
+// experts its positions picked - and the decode hit share at every cache size, the same curve as the
+// token's own (HitCurve) but over verify steps. A verify reads that union, so where the cache holds a
+// token's experts it can still miss a verify's: on a 16 GB laptop Flash-Next's hit went from 90.6% to
+// 84.9% at 4 positions and 71.4% at 9.
+struct VerifyCurve {
+    uint32_t width = 0;
+    uint64_t bytes_per_step = 0;
+    HitCurve curve;
+};
+
 struct ModelProfile {
     std::string arch; // for the rationale and for the record; never branched on
     bool is_moe = false;
@@ -250,6 +262,9 @@ struct ModelProfile {
     // (attach_routing in bmoe/routing.h). Not read from the file: a front-end that kept a trace hands
     // it back, and without one the curve is absent and the plan is what it always was.
     HitCurve hit_curve;
+    // The same record replayed as verifies of the widths the plan may draft at, narrowest first; empty
+    // without a record, and the plan then bounds a verify from the token cycle (draft pricing).
+    std::vector<VerifyCurve> verify_curves;
 
     // What an earlier load of this model measured about its lossless knobs on this machine and this
     // engine (bmoe/measured_knobs.h), the record a front-end kept and probe_and_plan matched by

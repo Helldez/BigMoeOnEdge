@@ -3,6 +3,7 @@
 
 #include "gguf.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -91,8 +92,37 @@ void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
         out.reads_target = target >= 0;
         // How many of the target's layers it reads: each one's input is a buffer the target keeps for
         // the draft (llama_set_embeddings_layer_inp), so it is what the draft costs the target's device.
-        if (target >= 0 && gguf_get_kv_type(gctx, target) == GGUF_TYPE_ARRAY)
+        if (target >= 0 && gguf_get_kv_type(gctx, target) == GGUF_TYPE_ARRAY) {
             out.n_target_layers = (int) gguf_get_arr_n(gctx, target);
+            // The deepest of them: a draft reading a layer the model does not have is not its draft.
+            const gguf_type t = gguf_get_arr_type(gctx, target);
+            if (t == GGUF_TYPE_INT32 || t == GGUF_TYPE_UINT32) {
+                const auto * ids = (const int32_t *) gguf_get_arr_data(gctx, target);
+                for (int i = 0; i < out.n_target_layers; ++i)
+                    out.target_layer_max = std::max(out.target_layer_max, (int) ids[i]);
+            }
+        }
+    }
+    // The vocabulary, as a draft is checked against its model (llama.cpp's
+    // common_speculative_are_compatible compares the vocabulary's type and its tokens' text): the token
+    // count, and an FNV-1a hash of the tokenizer's model name and every token's text in order. Two files
+    // that share it share the vocabulary.
+    const int64_t tokens = gguf_find_key(gctx, "tokenizer.ggml.tokens");
+    if (tokens >= 0 && gguf_get_kv_type(gctx, tokens) == GGUF_TYPE_ARRAY &&
+        gguf_get_arr_type(gctx, tokens) == GGUF_TYPE_STRING) {
+        uint64_t h = 1469598103934665603ull;
+        const auto mix = [&h](const char * str) {
+            for (const char * c = str; c && *c; ++c)
+                h = (h ^ (unsigned char) *c) * 1099511628211ull;
+            h = (h ^ 0xffu) * 1099511628211ull; // a separator no token text holds
+        };
+        const int64_t vocab_model = gguf_find_key(gctx, "tokenizer.ggml.model");
+        if (vocab_model >= 0 && gguf_get_kv_type(gctx, vocab_model) == GGUF_TYPE_STRING)
+            mix(gguf_get_val_str(gctx, vocab_model));
+        out.n_vocab = (int) gguf_get_arr_n(gctx, tokens);
+        for (int i = 0; i < out.n_vocab; ++i)
+            mix(gguf_get_arr_str(gctx, tokens, i));
+        out.vocab_hash = h;
     }
     out.ok = true;
 }

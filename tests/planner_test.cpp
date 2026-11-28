@@ -5327,23 +5327,37 @@ int main() {
         both.knobs.device_cache_tps = 40.0;
         both.knobs.host_call_tps = 30.0;
         both.knobs.set_device_answer(acc.name, 1);
+        // The model's routing replayed as verifies: a curve that serves `hit` of a verify's union at any
+        // cache this plan gives, the union `cycles` token cycles' bytes.
+        const auto verify = [&](uint32_t width, double cycles, double hit) {
+            VerifyCurve v;
+            v.width = width;
+            v.bytes_per_step = (uint64_t) (cycles * (double) model.token_cycle_bytes);
+            v.curve.measured = true;
+            v.curve.points = {{0, 0.0}, {1 * MiB, hit}};
+            return v;
+        };
+        const PlannerPolicy pol = PlannerPolicy::defaults();
+        const uint32_t narrow = (uint32_t) (1 + pol.draft_tokens), wide = (uint32_t) (1 + pol.draft_tokens_wide);
+        // A cache that holds a verify's union: what the record replays on a machine whose cache holds most
+        // of what a verify reads.
+        both.verify_curves = {verify(narrow, 1.6, 0.97), verify(wide, 2.0, 0.96)};
         PlanRequest keep;
         keep.measure_knobs = true;
-        const auto plan_with = [&](const ModelProfile & m) {
-            return plan_run(long_ctx, uma, m, pl, keep, PlannerPolicy::defaults());
-        };
+        const auto plan_with = [&](const ModelProfile & m) { return plan_run(long_ctx, uma, m, pl, keep, pol); };
         const auto side_of = [](const Plan & p) { return p.config.trial.spec_side; };
 
         // One draft a load, the head first, then the draft model, then none.
         const Plan l1 = plan_with(both);
         check(l1.config.spec.is_mtp() && side_of(l1) == KnobTrialConfig::spec_side_head && validate(l1.config).ok,
-              "which draft, load 1: the head, timed");
+              "which draft, load 1: the head, timed", find(l1, "spec") ? find(l1, "spec")->reason : std::string());
         ModelProfile m2 = both;
         m2.knobs.spec_tps = 90.0;
         const Plan l2 = plan_with(m2);
         check(l2.config.spec.is_drafter() && l2.config.spec.drafter_file == both.drafter.path &&
                   side_of(l2) == KnobTrialConfig::spec_side_drafter && validate(l2.config).ok,
-              "which draft, load 2: the paired draft model, timed", validate(l2.config).error);
+              "which draft, load 2: the paired draft model, timed",
+              find(l2, "spec") ? find(l2, "spec")->reason : std::string("no spec decision"));
         ModelProfile m3 = m2;
         m3.knobs.drafter_tps = 112.0;
         const Plan l3 = plan_with(m3);
@@ -5380,6 +5394,49 @@ int main() {
         none.drafter = {};
         const Plan l8 = plan_with(none);
         check(!l8.config.spec.enabled() && !find(l8, "spec"), "which draft: no head and no paired draft model, none");
+
+        // The price: what the verify's union costs at this cache decides the draft and its width.
+        // A cache that holds both widths' unions: the wide draft is priced faster, and armed.
+        const Plan big = plan_with(only);
+        check(big.config.spec.is_drafter() && big.config.spec.draft_max == pol.draft_tokens_wide,
+              "draft price, a cache holding the wide verify: the draft model at the wide width",
+              std::to_string(big.config.spec.draft_max) +
+                  (find(big, "spec") ? ": " + find(big, "spec")->reason : std::string()));
+        // A cache that holds the narrow verify's union but not the wide one's: the narrow width.
+        ModelProfile mid = only;
+        mid.verify_curves = {verify(narrow, 1.6, 0.97), verify(wide, 3.5, 0.55)};
+        const Plan nar = plan_with(mid);
+        check(nar.config.spec.is_drafter() && nar.config.spec.draft_max == pol.draft_tokens,
+              "draft price, a cache holding only the narrow verify: the narrow width",
+              std::to_string(nar.config.spec.draft_max) +
+                  (find(nar, "spec") ? ": " + find(nar, "spec")->reason : std::string()));
+        // A cache a verify's union does not fit: every miss read from the file, priced slower than none.
+        ModelProfile small = only;
+        small.verify_curves = {verify(narrow, 3.0, 0.40), verify(wide, 4.5, 0.30)};
+        const Plan sm = plan_with(small);
+        check(!sm.config.spec.enabled() && !find(sm, "spec") && side_of(sm) < 0,
+              "draft price, a cache a verify does not fit: no draft, not even timed");
+        // A measured rate overrides the price: the same small cache, the draft model timed faster.
+        ModelProfile timed = small;
+        timed.knobs.drafter_tps = 112.0;
+        timed.knobs.drafter_accept = 0.65;
+        timed.knobs.drafter_draft = pol.draft_tokens_wide;
+        timed.knobs.no_spec_tps = 66.0;
+        const Plan tm = plan_with(timed);
+        const Decision * dt = find(tm, "spec");
+        check(tm.config.spec.is_drafter() && side_of(tm) < 0 && tm.config.spec.draft_max == pol.draft_tokens_wide &&
+                  dt && dt->source == Source::Measured,
+              "draft price: a measured rate past the margin overrides a price against it, at its measured width",
+              dt ? dt->reason : "no decision");
+        // Without a record there is no price (a verify's union is the routing's overlap, which only a
+        // record says): the coarse bound of 1 + draft token cycles holds here, and the loads time it.
+        ModelProfile no_record = only;
+        no_record.verify_curves.clear();
+        const Plan nr = plan_with(no_record);
+        check(nr.config.spec.is_drafter() && side_of(nr) == KnobTrialConfig::spec_side_drafter &&
+                  nr.config.spec.draft_max == pol.draft_tokens,
+              "draft price, no record: unpriced, the coarse bound passes and the load times it at the plan's width",
+              find(nr, "spec") ? find(nr, "spec")->reason : std::string());
     }
 
     return failures ? 1 : 0;

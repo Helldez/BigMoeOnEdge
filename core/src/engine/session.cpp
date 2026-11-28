@@ -2632,6 +2632,8 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     if (!r.done()) return;
     const double tps = r.tokens_per_second();
     record_side_rate(cfg.trial, tps, trials.result);
+    if (mtp_drafted > 0)
+        record_side_accept(cfg.trial, (double) mtp_accepted / (double) mtp_drafted, cfg.spec.draft_max, trials.result);
     log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s, the median of %d windows", tps, what, r.windows());
     trials.rate_timed = true;
     next_trial_stage(/*settled*/ true);

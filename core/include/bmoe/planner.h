@@ -162,6 +162,15 @@ struct PlannerPolicy {
     // Qwen3.6-35B from a device expert cache: 3 decoded fastest with the model's own head and with a
     // separate drafter, and 8 was slower than 3.
     int draft_tokens = 3;
+    // The wider width the plan prices beside it: a rented 24 GB card measured a draft model at 5
+    // (Qwen3.8-Flash-Next, 66 -> 110-114 tok/s on code). A verify of 1 + this reads a wider union of
+    // experts, so it is armed only where the price says the cache holds it (draft pricing); 8 was
+    // slower than 3 on both machines measured, and is not priced.
+    int draft_tokens_wide = 5;
+    // The share of drafted tokens a draft is credited as accepted, at `draft_tokens`, before a load of
+    // it measured its own (MeasuredKnobs::spec_accept, drafter_accept): 54-71% was measured at a draft
+    // of 3 on a 16 GB laptop, with the model's head and with a draft model, so a prior in that range.
+    float draft_accept_prior = 0.6f;
 
     // How much more memory a shared-memory device must report free than it did when it failed to open
     // this model whole (MeasuredKnobs::shared_device_unviable_free_mib) before the plan names it again,

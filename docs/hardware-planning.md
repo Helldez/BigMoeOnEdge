@@ -1452,10 +1452,31 @@ is asked on the plan as it will serve, after every other rule, and only where:
 - the front-end keeps records, the session decodes greedily (`temp` 0), and `spec`, `mtp-head` and
   `trial-spec` are not pinned.
 
-The width is `PlannerPolicy::draft_tokens` (3, the measured best on the laptop above). A `--draft` typed
-by hand is the width armed instead, and a typed `--mtp` or `--drafter` leaves the rule silent. Timing
-3 against 5 as a further side would cost one more load per draft, and is not done; a rented 24 GB card
-measured a draft model at 5 (Qwen3.8-Flash-Next, 66 to 110-114 tok/s on code). Then, one side a load:
+**A draft's gain is the cache's.** A verify reads the union of its positions' experts, so what a draft
+buys depends on whether the cache holds that union. On a 16 GB laptop a draft model paid +56% on
+Qwen3.6-35B, whose cache holds much of the model, and +15% on Flash-Next, whose hit fell from 90.6% to
+84.9% at a draft of 3 (71.4% at 8); on a 24 GB card with a 15 GB cache it paid +70% on Flash-Next. So
+each draft is priced at the cache this plan leaves it (`step_rates`, `step_seconds`):
+- **the verify step** of `1 + draft` positions, from the model's routing record replayed as verifies
+  (`verify_trace`: every `1 + draft` decoded tokens one step, per layer the union of their experts, kept
+  as `ModelProfile::verify_curves`): its bytes and the share the cache serves; hits at the device's expert
+  rate, misses through the miss path (the file into a shared device's slots, the link to a card's);
+- **the draft's own pass:** one block per drafted token for the head, its weights once a step for a draft
+  model;
+- **the tokens a verify yields**, `1 + α + … + α^draft`, at the acceptance the draft's own timed load
+  measured (`spec_accept`, `drafter_accept`, with the width it drafted at) or the prior
+  (`PlannerPolicy::draft_accept_prior`, 60% at a draft of 3, inside the 54-71% measured);
+- against the decode without a draft priced the same way.
+
+Each draft runs at the width priced faster: `PlannerPolicy::draft_tokens` (3) or `draft_tokens_wide` (5,
+measured on the card), or a `--draft` typed by hand, or the width its load was measured at. An untimed
+draft priced inside the margin over none is not timed at all. A measured rate overrides the price. **No
+record, no price:** the union is set by how consecutive tokens' routing overlaps, which only a record
+says, and a bound from the model alone (positions routed independently) put a verify of 4 at nearly 4
+tokens' bytes and priced out drafts measured to pay. There the coarse bound decides (`verify_reads_held`)
+and the loads time it.
+
+Then, one side a load:
 - **A draft not timed:** the load arms it and times its decode: the head first (`--trial-spec 1`),
   then the draft model (`--trial-spec 2`, `spec = drafter` with the paired file, on the device of a
   device expert cache).

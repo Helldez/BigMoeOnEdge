@@ -75,7 +75,12 @@ struct GgufModelInfo {
     int n_block = 0;
     int n_nextn = 0;
     bool reads_target = false;
-    int n_target_layers = 0; // the length of `<arch>.target_layers`, 0 where it names none
+    int n_target_layers = 0;   // the length of `<arch>.target_layers`, 0 where it names none
+    int target_layer_max = -1; // the deepest layer it names, -1 where it names none
+    // The vocabulary: `tokenizer.ggml.tokens`' count and a hash of the tokenizer's model and every
+    // token's text (0 where the file carries no tokenizer).
+    int n_vocab = 0;
+    uint64_t vocab_hash = 0;
     // `general.name`: the base model the conversion wrote this file from. A model and the companion
     // files of the same conversion (its projector) carry the same one, which is how they are paired.
     std::string name;

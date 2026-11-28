@@ -90,6 +90,12 @@ struct MeasuredKnobs {
     // the same no_spec_tps: a third side of the same decision. On a rented 24 GB card a block-diffusion
     // drafter at a draft of 5 took Qwen3.8-Flash-Next from 66 to 110-114 tok/s on code.
     double drafter_tps = 0.0;
+    // What each draft's timed load accepted: the share of drafted tokens the model confirmed
+    // (mtp_accepted over mtp_drafted) and the width it drafted at, 0 where unmeasured. The plan prices
+    // a draft's other widths from it (draft pricing), and arms a measured draft at the width it was
+    // measured at.
+    double spec_accept = 0.0, drafter_accept = 0.0;
+    int spec_draft = 0, drafter_draft = 0;
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -292,6 +298,9 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
 // order, so a rate never answers two questions measured under one placement. Nothing when `trial`
 // names no side.
 void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);
+// A draft side's acceptance (the share of drafted tokens confirmed) and the width it drafted at, beside
+// its rate: what the plan prices that draft's other widths from. Nothing for a side without a draft.
+void record_side_accept(const KnobTrialConfig & trial, double accepted_share, int draft, MeasuredKnobs & rec);
 // The same side, one more failed open on its count (MeasuredKnobs::*_unviable).
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec);
 // The failed-open count of the side `trial` names, null when it names none.

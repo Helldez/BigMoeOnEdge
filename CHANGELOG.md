@@ -131,8 +131,9 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
 - **`--auto` weighs a draft model paired with the model beside its own head and no draft.** On a rented
   24 GB card a block-diffusion draft model at a draft of 5 took Qwen3.8-Flash-Next from 66 to 110-114 tok/s
   on code, and `--auto` armed none. The front-end now pairs one: the server takes the draft model of the
-  model's folder, by headers (a file that reads another model's layers and names this model as its base,
-  `drafter_for`), and the CLI takes a `--drafter-file` typed with `--auto` and without `--drafter`. The
+  model's folder by the facts the speculative driver checks, read from both headers: the same vocabulary
+  (token count and a hash of every token), the same hidden width, and target layers the model has
+  (`drafter_for`); exactly one file must fit, and no name decides, and the CLI takes a `--drafter-file` typed with `--auto` and without `--drafter`. The
   engine never looks for a file. The draft rule then has up to three sides: the head (`--trial-spec 1`),
   the draft model (`--trial-spec 2`, its rate kept as `drafter_tps`) and none (`--trial-spec 0`). It times
   each on a load of its own and keeps the fastest only where it decodes faster than none by 10%. The
@@ -141,6 +142,18 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   n_ctx`, the layer count read from its header), its blocks' KV and its compute. The width stays
   `PlannerPolicy::draft_tokens` (3); a 3-against-5 side would cost a load per draft and is not timed. The
   plan's own path has not run on hardware yet.
+- **A draft is priced at the cache it leaves, and armed at the width priced faster.** A verify reads the
+  union of its positions' experts, so a draft's gain is the cache's: +56% on Qwen3.6-35B on a 16 GB laptop
+  whose cache holds much of the model, +15% on Flash-Next there (hit 90.6% -> 84.9% at a draft of 3), +70%
+  on a 24 GB card with a 15 GB cache. The plan now replays the model's routing record as verifies
+  (`verify_trace`, per layer the union of `1 + draft` consecutive tokens' experts) and prices each draft at
+  each width (3, or 5, `PlannerPolicy::draft_tokens_wide`): the verify step at the device's rates, hits and
+  misses, the draft's own pass, and the tokens a verify yields at the acceptance its load measured
+  (`spec_accept`, `drafter_accept`, new in the record) or a prior of 60%. It arms the faster width, does
+  not time a draft priced inside the margin over none, and lets a measured rate override the price.
+  Without a record there is no price, and the coarse bound and the loads decide, as before. The pairing
+  rule changed too: a drafter's `general.name` is whatever its conversion wrote (`Qwendflash` beside
+  `Qwen3.6 35B A3B`), so the server pairs by vocabulary, hidden width and target layers.
 - **A draft's bytes are charged on a card before its device expert cache is sized.** On a rented 24 GB card,
   a 15.2-15.6 GB device cache left no room for a draft of 3, and the session ran out of device memory
   reserving it. A draft opens after the fitter's placement, so it was in no ledger. Where the device's

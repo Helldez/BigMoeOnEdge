@@ -490,6 +490,13 @@ int main() {
                       std::fabs(mback[0].drafter_tps - 112.0) < 1e-9 && mback[0].drafter_unviable == 0 &&
                       std::fabs(mback[0].spec_tps - 36.0) < 1e-9,
                   "record: the draft model's rate reads back beside the head's, the failure cleared");
+            record_side_accept(model_draft, 0.65, 5, kept[0]);
+            record_side_accept(plain, 0.9, 3, kept[0]); // a side without a draft keeps no acceptance
+            mback.clear();
+            check(parse_measured_knobs(format_measured_knobs({kept[0]}), mback, err) && mback.size() == 1 &&
+                      std::fabs(mback[0].drafter_accept - 0.65) < 1e-4 && mback[0].drafter_draft == 5 &&
+                      mback[0].spec_draft == 0,
+                  "record: a draft model's acceptance and width read back; a side without a draft keeps none");
         }
         // The shared-memory device's prompt rates, as the load that compared the answers timed them: read
         // back as written, counted, merged beside the decode rates, and absent from an earlier record.

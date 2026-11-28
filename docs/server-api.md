@@ -488,10 +488,12 @@ model only when one of the two headers has no name to check. Or name it with the
 parameter.
 
 **Draft models.** Where no draft is set, the server pairs the model with the draft model of its folder,
-by headers again: a file that names layers of another model it reads (`<arch>.target_layers`), whose
-`general.name` starts with the model's (a drafter's name is its target's with a suffix, as
-"Qwen3.6-35B-A3B-DFlash"). Two such files and no match is no choice. The plan then times it beside the
-model's own head and no draft, and arms it only where it decodes faster
+by the facts llama.cpp's speculative driver checks the pair by, read from both headers: a file that
+names layers of another model it reads (`<arch>.target_layers`), with the model's vocabulary (the same
+token count and the same hash of every token's text), the model's hidden width, and only layers the
+model has. Exactly one such file is paired; none or several is no choice. No name decides: a drafter's
+`general.name` is whatever its conversion wrote. The plan then times it beside the model's own head and
+no draft, and arms it only where it decodes faster
 ([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)). Any model llama.cpp's projector library knows, in any quantization of either
 file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
 to fetch is refused with `400`, since a server on a network must not be made to fetch what a client

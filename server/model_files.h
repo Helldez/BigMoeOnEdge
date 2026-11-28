@@ -99,12 +99,14 @@ struct CompanionFile {
 // Names of files never decide; headers do.
 std::string projector_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder);
 
-// The draft model that goes with a model, among the files of its folder: a file whose header says it
-// reads another model's layers (`<arch>.target_layers`: a drafter, not a model's own head) and names a
-// base model that starts with this one's (a drafter's `general.name` is its target's with a suffix, as
-// "Qwen3.6-35B-A3B-DFlash"), compared as projector_for compares; failing that, the folder's only such
-// file where one side has no name. "" when there is none or more than one fits. The plan then weighs it
-// beside the model's own head and no draft (docs/hardware-planning.md); names of files never decide.
+// The draft model that goes with a model, among the files of its folder: by the facts llama.cpp's
+// speculative driver checks the pair by, read from both headers. A file that reads another model's
+// layers (`<arch>.target_layers`: a drafter, not a model's own head), whose vocabulary is the model's
+// (the same token count and the same hash of every token's text), whose hidden width is the model's
+// (a draft reads the model's hidden states at its own width) and whose layers read are all layers the
+// model has. Exactly one such file is the pairing; none, or several, is no choice. No name decides: a
+// drafter's `general.name` is whatever its conversion wrote ("Qwendflash" beside "Qwen3.6 35B A3B").
+// The plan then weighs it beside the model's own head and no draft (docs/hardware-planning.md).
 std::string drafter_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder);
 
 // `general.name` as compared above: lowercase letters and digits, nothing else.

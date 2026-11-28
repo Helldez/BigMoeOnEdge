@@ -411,8 +411,63 @@ HitCurve hit_curve(const RoutingTrace & t, uint32_t points, int half_life) {
     return c;
 }
 
-void attach_routing(ModelProfile & m, const RoutingTrace & t, uint32_t n_expert_used, int half_life) {
+RoutingTrace verify_trace(const RoutingTrace & t, uint32_t width, uint64_t & bytes_per_step) {
+    RoutingTrace out = t;
+    out.batches.clear();
+    bytes_per_step = 0;
+    if (width < 1) width = 1;
+    // A decoded token is a run of decode batches with ascending layers: the next token starts where
+    // a layer does not follow the previous one.
+    std::vector<std::vector<const RoutingBatch *>> group; // the tokens of the step being gathered
+    uint64_t bytes = 0, steps = 0;
+    const auto flush = [&] {
+        if (group.empty()) return;
+        std::vector<uint32_t> order;
+        std::map<uint32_t, std::set<int32_t>> by_layer;
+        for (const auto & token : group)
+            for (const RoutingBatch * b : token) {
+                if (!by_layer.count(b->layer)) order.push_back(b->layer);
+                by_layer[b->layer].insert(b->experts.begin(), b->experts.end());
+            }
+        for (uint32_t layer : order) {
+            RoutingBatch merged;
+            merged.layer = layer;
+            merged.decode = true;
+            merged.experts.assign(by_layer[layer].begin(), by_layer[layer].end());
+            if (layer < t.expert_bytes.size()) bytes += merged.experts.size() * t.expert_bytes[layer];
+            out.batches.push_back(std::move(merged));
+        }
+        ++steps;
+        group.clear();
+    };
+    int64_t last_layer = -1;
+    for (const RoutingBatch & b : t.batches) {
+        if (!b.decode) {
+            flush();
+            last_layer = -1;
+            out.batches.push_back(b);
+            continue;
+        }
+        if (group.empty() || (int64_t) b.layer <= last_layer) {
+            if (group.size() == width) flush();
+            group.emplace_back();
+        }
+        group.back().push_back(&b);
+        last_layer = b.layer;
+    }
+    flush();
+    out.decode_tokens = (uint32_t) steps;
+    bytes_per_step = steps ? bytes / steps : 0;
+    return out;
+}
+
+void attach_routing(ModelProfile & m,
+                    const RoutingTrace & t,
+                    uint32_t n_expert_used,
+                    int half_life,
+                    const std::vector<uint32_t> & verify_widths) {
     m.hit_curve = HitCurve{};
+    m.verify_curves.clear();
     auto reject = [&](std::string why) { m.hit_curve.rejected = std::move(why); };
     if (t.empty()) return reject("the stored routing trace is empty");
     if (!m.ok || !m.is_moe) return reject("the model has no routed experts to price a cache for");
@@ -438,7 +493,15 @@ void attach_routing(ModelProfile & m, const RoutingTrace & t, uint32_t n_expert_
                       " MiB and this model's is " + std::to_string((unsigned long long) (file / (1024.0 * 1024.0))) +
                       " MiB");
     m.hit_curve = hit_curve(t, k_hit_curve_points, half_life);
-    if (!m.hit_curve.measured) reject("the trace has no decoded tokens");
+    if (!m.hit_curve.measured) return reject("the trace has no decoded tokens");
+    for (uint32_t w : verify_widths) {
+        if (w < 2) continue;
+        VerifyCurve v;
+        v.width = w;
+        const RoutingTrace widened = verify_trace(t, w, v.bytes_per_step);
+        v.curve = hit_curve(widened, k_verify_curve_points, half_life);
+        if (v.curve.measured) m.verify_curves.push_back(std::move(v));
+    }
 }
 
 } // namespace bmoe

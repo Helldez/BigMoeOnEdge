@@ -230,23 +230,18 @@ std::string projector_for(const GgufHeaderFacts & model, const std::vector<Compa
 }
 
 std::string drafter_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder) {
-    std::vector<const CompanionFile *> drafters;
-    for (const CompanionFile & f : folder)
-        if (f.header.ok && f.header.reads_target && file_role(f.header) == FileRole::Draft) drafters.push_back(&f);
-    if (drafters.empty()) return "";
-    const std::string want = name_key(model.name);
-    std::vector<const CompanionFile *> same, unnamed_side;
-    for (const CompanionFile * d : drafters) {
-        const std::string have = name_key(d->header.name);
-        if (!want.empty() && !have.empty()) {
-            if (have.compare(0, want.size(), want) == 0) same.push_back(d);
-        } else {
-            unnamed_side.push_back(d);
-        }
+    if (model.n_vocab <= 0 || model.n_embd <= 0 || model.n_block <= 0) return "";
+    const CompanionFile * pick = nullptr;
+    for (const CompanionFile & f : folder) {
+        const GgufHeaderFacts & d = f.header;
+        if (!d.ok || !d.reads_target || file_role(d) != FileRole::Draft) continue;
+        if (d.n_vocab != model.n_vocab || d.vocab_hash != model.vocab_hash) continue;
+        if (d.n_embd != model.n_embd) continue;
+        if (d.target_layer_max < 0 || d.target_layer_max >= model.n_block) continue;
+        if (pick) return ""; // two draft models fit: the person's choice
+        pick = &f;
     }
-    if (same.size() == 1) return same.front()->path;
-    if (same.size() > 1) return "";
-    return unnamed_side.size() == 1 && drafters.size() == 1 ? unnamed_side.front()->path : "";
+    return pick ? pick->path : "";
 }
 
 FileRole file_role_hint(const std::string & name) {

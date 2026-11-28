@@ -213,6 +213,12 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             out += std::string(" no_spec_tps=") + num;
             std::snprintf(num, sizeof(num), "%.3f", r.drafter_tps);
             out += std::string(" drafter_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.4f", r.spec_accept);
+            out += std::string(" spec_accept=") + num;
+            out += " spec_draft=" + std::to_string(r.spec_draft);
+            std::snprintf(num, sizeof(num), "%.4f", r.drafter_accept);
+            out += std::string(" drafter_accept=") + num;
+            out += " drafter_draft=" + std::to_string(r.drafter_draft);
         }
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
@@ -337,6 +343,14 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.no_spec_tps);
             else if (k == "drafter_tps")
                 ok = as_double(r.drafter_tps);
+            else if (k == "spec_accept")
+                ok = as_double(r.spec_accept);
+            else if (k == "drafter_accept")
+                ok = as_double(r.drafter_accept);
+            else if (k == "spec_draft")
+                ok = as_int(r.spec_draft);
+            else if (k == "drafter_draft")
+                ok = as_int(r.drafter_draft);
             else if (k == "shared_device_prompt_tps")
                 ok = as_double(r.shared_device_prompt_tps);
             else if (k == "no_shared_device_prompt_tps")
@@ -407,7 +421,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
             !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
             !(r.no_shared_device_prompt_tps >= 0.0) || !(r.host_call_tps >= 0.0) || !(r.no_host_call_tps >= 0.0) ||
-            !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) || !(r.drafter_tps >= 0.0)) {
+            !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) || !(r.drafter_tps >= 0.0) ||
+            !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) || !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) ||
+            r.spec_draft < 0 || r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
+            r.drafter_draft > SpecConfig::draft_max_limit) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -464,6 +481,14 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             if (rec.no_spec_tps > 0.0) r.no_spec_tps = rec.no_spec_tps;
             merge_unviable(r.drafter_unviable, rec.drafter_unviable, r.drafter_tps, rec.drafter_tps);
             if (rec.drafter_tps > 0.0) r.drafter_tps = rec.drafter_tps;
+            if (rec.spec_draft > 0) {
+                r.spec_accept = rec.spec_accept;
+                r.spec_draft = rec.spec_draft;
+            }
+            if (rec.drafter_draft > 0) {
+                r.drafter_accept = rec.drafter_accept;
+                r.drafter_draft = rec.drafter_draft;
+            }
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -555,6 +580,17 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
     } else if (trial.spec_side >= 0) {
         *spec_rate(trial.spec_side, rec) = tokens_per_second;
         *spec_unviable(trial.spec_side, rec) = 0;
+    }
+}
+
+void record_side_accept(const KnobTrialConfig & trial, double accepted_share, int draft, MeasuredKnobs & rec) {
+    if (draft <= 0 || !(accepted_share >= 0.0 && accepted_share <= 1.0)) return;
+    if (trial.spec_side == KnobTrialConfig::spec_side_head) {
+        rec.spec_accept = accepted_share;
+        rec.spec_draft = draft;
+    } else if (trial.spec_side == KnobTrialConfig::spec_side_drafter) {
+        rec.drafter_accept = accepted_share;
+        rec.drafter_draft = draft;
     }
 }
 

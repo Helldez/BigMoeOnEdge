@@ -26,6 +26,17 @@ namespace bmoe {
 
 namespace {
 
+// The verify widths a draft may run at, for the routing record to be replayed at (draft pricing): the
+// plan's two widths, and the run's own where it names one.
+std::vector<uint32_t> draft_verify_widths(const RunConfig & cfg) {
+    const PlannerPolicy pol = PlannerPolicy::defaults();
+    std::vector<uint32_t> w = {(uint32_t) (1 + pol.draft_tokens), (uint32_t) (1 + pol.draft_tokens_wide)};
+    const uint32_t typed = (uint32_t) (1 + std::max(0, cfg.spec.draft_max));
+    if (std::find(w.begin(), w.end(), typed) == w.end()) w.push_back(typed);
+    std::sort(w.begin(), w.end());
+    return w;
+}
+
 // The capacity fitter's placement of the facts' model at `width` tokens wide, asked of the fitter the
 // first time and kept with the facts (AutoPlan::placement_at_width). `snapshot` names the memory
 // snapshot taken after a fit that ran.
@@ -324,7 +335,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     if (opt.routing)
         attach_routing(r.model, *opt.routing,
                        cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used,
-                       cfg.moe.cache_freq_half_life);
+                       cfg.moe.cache_freq_half_life, draft_verify_widths(cfg));
     // What an earlier load measured about the lossless knobs, when it was this machine and engine.
     if (opt.knobs)
         // dt:plan.facts.knobs
