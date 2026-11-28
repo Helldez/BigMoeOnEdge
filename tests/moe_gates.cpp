@@ -2002,6 +2002,67 @@ int main(int argc, char ** argv) {
     }
 
     // ── G20: routing on a device with memory of its own, experts streamed from the host (#321) ──
+    // G25h — the device cache on a device whose memory the host writes in place (unified memory: its
+    // backend exports "ggml_backend_buffer_get_host_base", a capability, never a device's name), the one
+    // path the RPC gate device cannot take: misses read from the file into the slots on fill lanes, the
+    // next layer read ahead in the background, the last layer's lookup a host call. Every background
+    // fill first sets its slot to ones and is held back (device_cache_fill_delay_us), so a lookup that
+    // reads a slot before its fill lands computes garbage; each run must give the bytes of the model
+    // held whole on that device. a) splits, b) host call, c) host call and the cache lent to a prompt.
+    {
+        std::string dev_name;
+        for (size_t i = 0; i < ggml_backend_dev_count() && dev_name.empty(); ++i) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            const auto type = ggml_backend_dev_type(d);
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(d);
+            if ((type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) && reg != nullptr &&
+                ggml_backend_reg_get_proc_address(reg, "ggml_backend_buffer_get_host_base") != nullptr) {
+                dev_name = ggml_backend_dev_name(d);
+            }
+        }
+        if (dev_name.empty()) {
+            std::printf("[SKIP] G25h device cache filled in place: no device whose memory the host writes in place\n");
+        } else {
+            RunConfig whole = base(model);
+            whole.moe.enabled = false;
+            whole.n_gpu_layers = read_gguf_model_info(model.c_str()).n_block;
+            whole.device_split = {{dev_name, whole.n_gpu_layers}};
+            whole.n_ctx = 2048;
+            whole.n_predict = 64;
+            std::string wide_prompt;
+            for (int i = 0; i < 24; ++i) {
+                wide_prompt += "the streamed experts fill the slots again ";
+            }
+            RunConfig whole_w = whole;
+            whole_w.prompt = wide_prompt;
+            whole_w.n_ubatch = 128;
+
+            RunConfig filled = whole;
+            filled.buft_overrides = {"\\.ffn_(up|down|gate|gate_up)_(ch|)exps"};
+            filled.moe.device_cache_mb = 3; // a part of the experts, so that slots are evicted and read ahead
+            filled.moe.device_cache_fill_lanes = 2;
+            filled.moe.device_cache_read_ahead = 2;
+            filled.moe.device_cache_fill_delay_us = 5000;
+            RunConfig filled_hc = filled;
+            filled_hc.moe.device_cache_host_call = true;
+            RunConfig filled_lend = filled_hc;
+            filled_lend.prompt = wide_prompt;
+            filled_lend.n_ubatch = 128;
+            filled_lend.moe.device_cache_lend = true;
+
+            std::string s_whole, s_whole_w, s_a, s_b, s_c;
+            if (!gen(whole, s_whole, err) || !gen(whole_w, s_whole_w, err) || !gen(filled, s_a, err) ||
+                !gen(filled_hc, s_b, err) || !gen(filled_lend, s_c, err)) {
+                std::printf("[FAIL] G25h a run on %s failed: %s\n", dev_name.c_str(), err.c_str());
+                ++fails;
+            } else {
+                fails += check("G25h a) device cache filled in place, read ahead == model held whole", s_whole, s_a);
+                fails += check("G25h b) the same with host calls == model held whole", s_whole, s_b);
+                fails += check("G25h c) the same lent to a wide prompt == model held whole", s_whole_w, s_c);
+            }
+        }
+    }
+
     // The placement llama.cpp's capacity fitter writes when a MoE model does not fit: every layer's
     // dense part on the device, the routed experts overridden back to the host, where the streamer
     // serves them. The router's top-k then runs on the device, in a buffer that is not host memory,

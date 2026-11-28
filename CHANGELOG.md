@@ -98,6 +98,18 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.
 
+### Fixed
+- **The device cache's host-call lookup read slots its read-ahead had not filled yet.** The layer before
+  reads the next layer's experts ahead, in the background; the lookup made as a split waited for those
+  reads, the one made as a host call (the last layer at least) did not, so where every expert that layer
+  chose was a hit, one of them could be computed from a slot still holding another expert. On a
+  unified-memory laptop this flipped a token of a greedy answer in one run of many of the same command.
+  The host-call lookup now waits for them too. A new gate (G25h) runs the cache filled in place on a
+  device whose memory the host writes (found from what its backend exports, not from its name), with
+  every background fill held back and its slot set to ones until it lands (debug setting
+  `--device-cache-fill-delay-us`): without the fix the gate fails, with it every answer is the model held
+  whole on that device.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

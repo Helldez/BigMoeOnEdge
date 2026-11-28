@@ -19,7 +19,10 @@ class CacheFill {
 public:
     // Opens the model's shards on `lanes` reader lanes and installs the fill on ctx. nullptr where the
     // file cannot be read this way or llama.cpp refuses (no cache, or memory the host cannot write).
-    static std::unique_ptr<CacheFill> install(llama_context * ctx, const std::string & model_path, int lanes);
+    // async_delay_us > 0 (debug) holds every background fill that long before it reads (see
+    // MoeStreamConfig::device_cache_fill_delay_us).
+    static std::unique_ptr<CacheFill>
+    install(llama_context * ctx, const std::string & model_path, int lanes, int async_delay_us = 0);
     ~CacheFill();
 
     CacheFill(const CacheFill &) = delete;
