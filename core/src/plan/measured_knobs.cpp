@@ -218,6 +218,13 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             out += std::string(" drafter_accept=") + num;
             out += " drafter_draft=" + std::to_string(r.drafter_draft);
         }
+        // The experts' copy's two sides: later keys still, written once a load timed one.
+        if (r.staging_tps > 0.0 || r.no_staging_tps > 0.0) {
+            std::snprintf(num, sizeof(num), "%.3f", r.staging_tps);
+            out += std::string(" staging_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.3f", r.no_staging_tps);
+            out += std::string(" no_staging_tps=") + num;
+        }
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
         out += std::string(" decode_compute_s=") + num;
@@ -349,6 +356,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_int(r.spec_draft);
             else if (k == "drafter_draft")
                 ok = as_int(r.drafter_draft);
+            else if (k == "staging_tps")
+                ok = as_double(r.staging_tps);
+            else if (k == "no_staging_tps")
+                ok = as_double(r.no_staging_tps);
             else if (k == "shared_device_prompt_tps")
                 ok = as_double(r.shared_device_prompt_tps);
             else if (k == "no_shared_device_prompt_tps")
@@ -422,7 +433,7 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) || !(r.drafter_tps >= 0.0) ||
             !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) || !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) ||
             r.spec_draft < 0 || r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
-            r.drafter_draft > SpecConfig::draft_max_limit) {
+            r.drafter_draft > SpecConfig::draft_max_limit || !(r.staging_tps >= 0.0) || !(r.no_staging_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -488,6 +499,8 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.drafter_accept = rec.drafter_accept;
                 r.drafter_draft = rec.drafter_draft;
             }
+            if (rec.staging_tps > 0.0) r.staging_tps = rec.staging_tps;
+            if (rec.no_staging_tps > 0.0) r.no_staging_tps = rec.no_staging_tps;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -574,6 +587,8 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
         (trial.shared_device_side == 1 ? rec.shared_device_tps : rec.no_shared_device_tps) = tokens_per_second;
         (trial.shared_device_side == 1 ? rec.shared_device_unviable : rec.no_shared_device_unviable) = 0;
         if (trial.shared_device_side == 1) rec.shared_device_unviable_free_mib = 0;
+    } else if (trial.staging_side >= 0) {
+        (trial.staging_side == 1 ? rec.staging_tps : rec.no_staging_tps) = tokens_per_second;
     } else if (trial.spec_side >= 0) {
         *spec_rate(trial.spec_side, rec) = tokens_per_second;
         *spec_unviable(trial.spec_side, rec) = 0;
@@ -602,7 +617,8 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
 }
 
 bool names_side(const KnobTrialConfig & trial) {
-    return trial.device_tier >= 0 || trial.width_side >= 0 || trial.shared_device_side >= 0 || trial.spec_side >= 0;
+    return trial.device_tier >= 0 || trial.width_side >= 0 || trial.shared_device_side >= 0 || trial.spec_side >= 0 ||
+           trial.staging_side >= 0;
 }
 
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec) {

@@ -94,6 +94,15 @@ struct MeasuredKnobs {
     // measured at.
     double spec_accept = 0.0, drafter_accept = 0.0;
     int spec_draft = 0, drafter_draft = 0;
+    // Whether the device expert cache's misses upload from a copy of the experts in the device's own
+    // host memory (MoeStreamConfig::expert_host_buffer), decided across loads (planner.cpp,
+    // choose_expert_staging): the decode rate with the copy and without it, in tokens per second, 0
+    // when that side was not measured. The copy is made at load. The probe that compares the two
+    // upload paths is a reading of a shared bus: on a rented card shared with other tenants it named
+    // one side on a load and the other on the next, and the copy was worth 66 against 44 tok/s. Once a
+    // load has timed both sides, those rates decide and the probe no longer can.
+    double staging_tps = 0.0;
+    double no_staging_tps = 0.0;
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -269,8 +278,8 @@ struct MeasuredKnobs {
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
                (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
                (warm_experts > 0) + (spec_tps > 0.0) + (no_spec_tps > 0.0) + (spec_unviable > 0) +
-               (no_spec_unviable > 0) + (drafter_tps > 0.0) + (drafter_unviable > 0) + (int) prefill.size() +
-               (int) device_answers.size();
+               (no_spec_unviable > 0) + (drafter_tps > 0.0) + (drafter_unviable > 0) + (staging_tps > 0.0) +
+               (no_staging_tps > 0.0) + (int) prefill.size() + (int) device_answers.size();
     }
 };
 

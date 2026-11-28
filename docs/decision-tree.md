@@ -985,9 +985,14 @@ flowchart TD
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_expert_staging`
 - condition: `if (moe.device_cache_mb <= 0 || s.p.regime != Regime::Fits || s.req.is_pinned("expert-host-buffer")) return;`
-- It applies to a resident model with a device cache. When the device uploads from its own host
-  buffer 10% faster than from the mapping, and the copy fits →
-  `expert_host_buffer = <device>`.
+- It applies to a resident model with a device cache, where the device has host memory of its own
+  and the copy fits.
+- Both sides timed by loads (`staging_tps`, `no_staging_tps`) → the faster serves, whatever the
+  probe reads.
+- One side timed → this load serves the other, with `trial.staging_side` set, unless another side is
+  being timed or the load drafts (`spec.enabled()`), which then serves the timed side again.
+- Nothing timed → the copy (`expert_host_buffer = <device>`), unless the mapping uploaded 10% faster;
+  the load times its side, unless another side is being timed or it drafts.
 
 #### `plan.resident` — The model is held resident: no streaming
 - parent: —

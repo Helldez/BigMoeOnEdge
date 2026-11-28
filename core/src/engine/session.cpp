@@ -2507,7 +2507,8 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.spec_side >= 0;
+    trials.rate =
+        t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.spec_side >= 0 || t.staging_side >= 0;
     // A drafting load's rate counts the accepted drafts: it compares with no side timed without them
     // (record_side_rate), so it times none but the draft's own.
     if (trials.rate && cfg.spec.enabled() && t.spec_side < 0) {
@@ -2636,6 +2637,9 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
                           ? cfg.device_split.front().first.c_str()
                           : "the CPU");
+    else if (cfg.trial.staging_side >= 0)
+        std::snprintf(what, sizeof(what), "%s the experts copied into the device's host memory",
+                      cfg.trial.staging_side == 1 ? "with" : "without");
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",

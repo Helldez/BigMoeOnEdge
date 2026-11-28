@@ -119,8 +119,10 @@ memory, and a device's backend copies ordinary memory through a staging buffer o
 backend may offer a host buffer type of its own (`ggml_backend_dev_host_buffer_type`: page-locked
 memory on CUDA, Vulkan and SYCL; none on Metal, OpenCL or RPC), and a copy from it can go straight to
 the device. The isolated device probe times the same upload from both (`upload_gibs`,
-`upload_host_buffer_gibs`), and where the second wins by the planner's margin and the host holds the
-model, the plan names the device in `--expert-host-buffer`: at load the experts are copied into that
+`upload_host_buffer_gibs`, the median of three rounds taken in turns). Where the mapping does not win
+by the planner's margin and the host holds the model, the plan names the device in
+`--expert-host-buffer`. That probe only picks the first side: the loads time both, and the faster one
+serves from then on ([measured-planning.md](measured-planning.md)). At load the experts are copied into that
 buffer type, byte for byte in the file's layout, and the expert tensors pointed at the copy as the
 streamer points them at its slots. The copy takes the place of the experts' pages in the file's
 mapping, which are handed back once the tensors point at the copy, so the plan charges the experts

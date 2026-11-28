@@ -4708,10 +4708,91 @@ int main() {
                   "expert host buffer: faster from the backend's host memory, and the copy fits",
                   e ? e->reason : "no decision");
             check(validate(staged.config).ok, "expert host buffer: a valid config", validate(staged.config).error);
+            // A tie is noise on a shared bus: the copy, the path the backend's uploads are built for, is
+            // the first side; only a mapping faster by the margin keeps the experts in the mapping.
             hb.devices[0].upload_host_buffer_gibs = 25.0;
             const Plan level_hb = plan_on(hb, half, PlanRequest{});
-            check(level_hb.config.moe.expert_host_buffer.empty(),
-                  "expert host buffer: inside the margin, the mapping stays");
+            check(level_hb.config.moe.expert_host_buffer == "discrete",
+                  "expert host buffer: inside the margin, the copy is the first side");
+            hb.devices[0].upload_host_buffer_gibs = 15.0;
+            const Plan slower_hb = plan_on(hb, half, PlanRequest{});
+            check(slower_hb.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: the mapping faster by the margin, the mapping stays");
+
+            // Across loads. The device tier already measured, so the copy is the only side left to time.
+            {
+                ModelProfile seen = model;
+                seen.knobs.device_cache_tps = 50.0;
+                seen.knobs.no_device_cache_tps = 20.0;
+                const auto staged_on = [&](double probe_hb, double with_copy, double without) {
+                    HardwareProfile h = hb;
+                    h.devices[0].upload_host_buffer_gibs = probe_hb;
+                    ModelProfile m2 = seen;
+                    m2.knobs.staging_tps = with_copy;
+                    m2.knobs.no_staging_tps = without;
+                    return plan_run(base_cfg(), h, m2, half, PlanRequest{}, PlannerPolicy::defaults());
+                };
+                // Nothing timed: the probe picks the first side and this load times it.
+                const Plan first = staged_on(25.0, 0.0, 0.0);
+                check(first.config.moe.expert_host_buffer == "discrete" && first.config.trial.staging_side == 1 &&
+                          first.config.trial.device_tier == -1 && validate(first.config).ok,
+                      "expert host buffer, nothing timed: the copy served and timed, one trial at a time",
+                      validate(first.config).error);
+                // A load that drafts times no side: it serves the side already timed and times nothing.
+                {
+                    HardwareProfile h = hb;
+                    h.devices[0].upload_host_buffer_gibs = 25.0;
+                    ModelProfile m2 = seen;
+                    m2.knobs.staging_tps = 66.0;
+                    RunConfig drafting = base_cfg();
+                    drafting.spec.source = DraftSource::ngram;
+                    const Plan dr = plan_run(drafting, h, m2, half, PlanRequest{}, PlannerPolicy::defaults());
+                    check(dr.config.moe.expert_host_buffer == "discrete" && dr.config.trial.staging_side == -1,
+                          "expert host buffer, a drafting load: the timed side served, nothing timed");
+                }
+                // A draft to time on the same load: the copy's side yields to the draft's, one side a load.
+                {
+                    ModelProfile headed = seen;
+                    headed.has_mtp = true;
+                    PlanRequest keep;
+                    keep.measure_knobs = true;
+                    const Plan both = plan_run(base_cfg(), hb, headed, half, keep, PlannerPolicy::defaults());
+                    check(both.config.trial.spec_side >= 0 && both.config.trial.staging_side == -1 &&
+                              validate(both.config).ok,
+                          "expert host buffer, a draft timed on this load: the copy's side waits",
+                          std::to_string(both.config.trial.spec_side) + " spec side, " +
+                              std::to_string(both.config.trial.staging_side) + " staging side; " +
+                              validate(both.config).error);
+                }
+                // The copy timed: the next load serves the mapping and times it.
+                const Plan second = staged_on(25.0, 66.0, 0.0);
+                check(second.config.moe.expert_host_buffer.empty() && second.config.trial.staging_side == 0 &&
+                          validate(second.config).ok,
+                      "expert host buffer, the copy timed: the mapping served and timed",
+                      validate(second.config).error);
+                // The flip: both timed, the copy faster, and a noisy probe now reads the mapping far ahead.
+                // The measured win holds and nothing is timed again.
+                const Plan flip = staged_on(5.0, 66.0, 44.0);
+                const Decision * f = find(flip, "expert-host-buffer");
+                check(
+                    flip.config.moe.expert_host_buffer == "discrete" && flip.config.trial.staging_side == -1 && f &&
+                        f->source == Source::Measured && f->reason.find("66.00 tok/s") != std::string::npos,
+                    "expert host buffer, measured faster across loads: a probe that reads the other way cannot undo it",
+                    f ? f->reason : "no decision");
+                // And the other way round: the mapping measured faster stays, whatever the probe reads.
+                const Plan mapped = staged_on(48.0, 40.0, 44.0);
+                check(mapped.config.moe.expert_host_buffer.empty() && mapped.config.trial.staging_side == -1,
+                      "expert host buffer, the mapping measured faster: no copy, not timed again");
+                // Without room for the copy no rate makes one.
+                HardwareProfile tight_h = hb;
+                tight_h.residency_budget = model.dense_bytes * 2;
+                ModelProfile m3 = seen;
+                m3.knobs.staging_tps = 66.0;
+                m3.knobs.no_staging_tps = 44.0;
+                const Plan no_room = plan_run(base_cfg(), tight_h, m3, half, PlanRequest{}, PlannerPolicy::defaults());
+                check(no_room.config.moe.expert_host_buffer.empty() && no_room.config.trial.staging_side == -1,
+                      "expert host buffer, no room: the measured win does not make a copy");
+            }
             // The copy takes the place of the mapped experts the host is already charged for: a host with
             // room for the model and not for the experts twice still takes it, and says it holds them once.
             // Charged twice, every 64 GB machine a 32 GB expert set ran on refused the copy and uploaded

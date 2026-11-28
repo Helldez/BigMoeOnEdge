@@ -1124,15 +1124,22 @@ void choose_device_tier(Planning & s) {
 // Where the device cache's misses come from. A resident expert is a page of the file's mapping,
 // ordinary memory, and a device's backend copies ordinary memory through a staging buffer of its
 // own; from a buffer of the backend's own host type it may copy directly (bmoe/hardware_profile.h,
-// `upload_host_buffer_gibs`). The copy is made where the gain was measured on this device, past the
-// margin. It takes the place of the experts' pages in the mapping, which host_all already charges:
-// once the tensors point at the copy nothing reads those pages, and the session hands them back
-// (Session::Impl::stage_experts_in_host_buffer), so the host holds the experts once, not twice. What
-// changes is that the copy cannot be paged out, which the regime's margin already covers. Charging
-// both sides refused the copy on every 64 GB machine a 32 GB expert set runs on (three rented cards,
-// Qwen3.8-Flash-Next Q2_0): misses arrived at half the rate, decode 20.7 tok/s on a 12 GB card where
-// a machine with the room for both took the copy and decoded 29-32. The experts streamed instead
-// live in the streamer's slots, which this does not move.
+// `upload_host_buffer_gibs`). The copy takes the place of the experts' pages in the mapping, which
+// host_all already charges: once the tensors point at the copy nothing reads those pages, and the
+// session hands them back (Session::Impl::stage_experts_in_host_buffer), so the host holds the experts
+// once, not twice. What changes is that the copy cannot be paged out, which the regime's margin
+// already covers. Charging both sides refused the copy on every 64 GB machine a 32 GB expert set runs
+// on (three rented cards, Qwen3.8-Flash-Next Q2_0): misses arrived at half the rate, decode 20.7 tok/s
+// on a 12 GB card where a machine with the room for both took the copy and decoded 29-32. The experts
+// streamed instead live in the streamer's slots, which this does not move.
+//
+// Decided across loads (MeasuredKnobs::staging_tps). The probe compares the two upload paths on a bus
+// other tenants may share, and on a rented card it named the copy on one load and the mapping on the
+// next, for 66 against 44 tok/s and a prompt 30% slower. So the probe only picks the first side, and
+// the copy is that side unless the mapping uploaded faster by the margin: the backend's own host memory
+// is the path its uploads are built for, and a tie is noise. That load times its side, the next load
+// the other, and from then on the faster side measured serves, whatever a probe reads. One trial at a
+// time: a load already timing another side keeps the probe's pick untimed.
 void choose_expert_staging(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
     // dt:plan.staging
@@ -1142,35 +1149,87 @@ void choose_expert_staging(Planning & s) {
     if (!dev) return;
     const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
     const std::string pct = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    const MeasuredKnobs & mk = s.model.knobs;
+    KnobTrialConfig & t = s.p.config.trial;
     char rates[200];
     std::snprintf(rates, sizeof(rates),
                   "a miss reaches %s at %.1f GiB/s from the file's mapping and at %.1f from "
                   "the backend's own host memory",
                   dev->name.c_str(), dev->upload_gibs, dev->upload_host_buffer_gibs);
-    if (dev->upload_host_buffer_gibs <= 0.0 || dev->upload_gibs <= 0.0 ||
-        dev->upload_host_buffer_gibs <= dev->upload_gibs * (1.0 + (double) s.pol.min_backend_win)) {
-        s.note("expert-host-buffer", "false", dev->upload_host_buffer_gibs > 0.0 ? Source::Measured : Source::Derived,
-               "The device cache uploads from the file's mapping.",
-               dev->upload_host_buffer_gibs > 0.0
-                   ? std::string(rates) + ", inside the " + pct + " margin"
-                   : dev->name + " offers no host memory of its own to upload from, or its rate is unmeasured");
+    const auto from_mapping = [&](Source src, const std::string & reason) {
+        s.note("expert-host-buffer", "false", src, "The device cache uploads from the file's mapping.", reason);
+    };
+    if (dev->upload_host_buffer_gibs <= 0.0) {
+        from_mapping(Source::Derived,
+                     dev->name + " offers no host memory of its own to upload from, or its rate is unmeasured");
+        return;
+    }
+    // The device's answers are compared on the cores' terms, which a staged copy would change (config.cpp).
+    if (!t.answer_device.empty()) {
+        from_mapping(Source::Derived, "this load compares " + t.answer_device +
+                                          "'s answers with the cores', which a copy of the experts would change");
         return;
     }
     const uint64_t copy = s.host_expert_bytes;
     // The copy in place of the mapped experts host_all counts (see above): the same total, held once.
     const uint64_t held = s.held_all() - std::min(s.held_all(), s.host_expert_bytes) + copy;
     if (held > s.usable) {
-        s.note("expert-host-buffer", "false", Source::Derived, "The device cache uploads from the file's mapping.",
-               std::string(rates) + ", but with the copy's " + mib_s(copy) + " MiB in place of the mapped experts " +
-                   "the host would hold " + mib_s(held) + " MiB, past the " + mib_s(s.usable) + " MiB it may");
+        from_mapping(Source::Derived, std::string(rates) + ", but with the copy's " + mib_s(copy) +
+                                          " MiB in place of the mapped experts the host would hold " + mib_s(held) +
+                                          " MiB, past the " + mib_s(s.usable) + " MiB it may");
+        return;
+    }
+    const std::string room = "; the copy's " + mib_s(copy) + " MiB takes the place of the experts' pages in the " +
+                             "file's mapping, which are handed back, so the host holds " + mib_s(held) + " MiB of " +
+                             "the " + mib_s(s.usable) + " it may";
+    // A load that drafts decodes at a rate no side timed without drafting can be compared with
+    // (record_side_rate), so it times nothing and serves the side a timing load would leave.
+    const bool drafts = s.p.config.spec.enabled();
+    const bool other_trial = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || drafts;
+    const char * why_untimed = drafts
+                                   ? "; this load drafts, which no rate here was timed with, so it times nothing and "
+                                     "serves that side again"
+                                   : "; this load times another setting, so it serves that side again";
+    bool stage = false;
+    Source src = Source::Measured;
+    std::string reason;
+    char tps[160];
+    if (mk.staging_tps > 0.0 && mk.no_staging_tps > 0.0) {
+        stage = mk.staging_tps > mk.no_staging_tps;
+        std::snprintf(tps, sizeof(tps), "%.2f tok/s with the copy against %.2f from the mapping", mk.staging_tps,
+                      mk.no_staging_tps);
+        reason = std::string(tps) +
+                 ", both measured on loads here, which a probe of the upload paths no longer "
+                 "overrides (" +
+                 rates + ")";
+    } else if (mk.staging_tps > 0.0 || mk.no_staging_tps > 0.0) {
+        // One side timed: this load serves the other and times it, unless another side is being timed.
+        const bool timed_copy = mk.staging_tps > 0.0;
+        stage = other_trial ? timed_copy : !timed_copy;
+        if (!other_trial) t.staging_side = stage ? 1 : 0;
+        src = Source::Derived;
+        std::snprintf(tps, sizeof(tps), "%.2f tok/s %s", timed_copy ? mk.staging_tps : mk.no_staging_tps,
+                      timed_copy ? "with the copy" : "from the mapping");
+        reason = std::string("a load here decoded ") + tps +
+                 (other_trial ? std::string(why_untimed)
+                              : "; this load serves the other side and times it, and the faster of the two serves "
+                                "from the next load");
+    } else {
+        stage = !(dev->upload_gibs > dev->upload_host_buffer_gibs * (1.0 + (double) s.pol.min_backend_win));
+        if (!other_trial) t.staging_side = stage ? 1 : 0;
+        src = Source::Measured;
+        reason = std::string(rates) +
+                 (stage ? ", the mapping not faster by the " + pct + " margin"
+                        : ", the mapping faster by more than the " + pct + " margin") +
+                 (other_trial ? "" : "; this load times its side and the next the other, and the faster serves");
+    }
+    if (!stage) {
+        from_mapping(src, reason);
         return;
     }
     moe.expert_host_buffer = dev->name;
-    s.note("expert-host-buffer", dev->name, Source::Measured,
-           "The experts copied into " + dev->name + "'s own host memory, for the cache's misses.",
-           std::string(rates) + "; the copy's " + mib_s(copy) + " MiB takes the place of the experts' pages in " +
-               "the file's mapping, which are handed back, so the host holds " + mib_s(held) + " MiB of the " +
-               mib_s(s.usable) + " it may");
+    s.note("expert-host-buffer", dev->name, src,
+           "The experts copied into " + dev->name + "'s own host memory, for the cache's misses.", reason + room);
 }
 
 // Who computes the device cache's misses. With every expert on the device the cores compute none, and
@@ -5126,7 +5185,10 @@ void choose_spec(Plan & p,
         if (x.knob == "spec") return; // a plan made again from this one already asked
     RunConfig & c = p.config;
     if (c.spec.enabled()) return;
-    const KnobTrialConfig & pending = c.trial;
+    // The experts' copy's side yields to the draft's: a load that times a draft times nothing else, and the
+    // copy's side waits for one that does not.
+    KnobTrialConfig pending = c.trial;
+    pending.staging_side = -1;
     if (names_side(pending) || !pending.answer_device.empty()) return;
     const bool own_memory = c.moe.device_cache_mb > 0 && !devices_share_host_memory(hw);
     const MeasuredKnobs & mk = m.knobs;
@@ -5292,6 +5354,7 @@ void choose_spec(Plan & p,
     const auto arm = [&](const Armed & a, int side) -> bool {
         RunConfig armed = a.config;
         armed.trial.spec_side = side;
+        if (side >= 0) armed.trial.staging_side = -1;
         const ValidationResult v = validate(armed);
         if (!v.ok) {
             refused = v.error;
@@ -5379,6 +5442,7 @@ void choose_spec(Plan & p,
                 "draft only where it decodes faster by the " +
                 margin + " margin");
     c.trial.spec_side = 0;
+    c.trial.staging_side = -1;
 }
 
 // ── a run that does not stream records its routing where no record exists yet ──
@@ -5530,6 +5594,11 @@ Plan plan_run(const RunConfig & base,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
     Plan p = plan_run_placed(base, hw, model, projected, req, pol);
+    // A rule after the staging one may have started a trial of its own: one side is timed per load, and
+    // the copy's then waits for a load that times nothing else.
+    KnobTrialConfig & t = p.config.trial;
+    if (t.staging_side >= 0 && (t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0))
+        t.staging_side = -1;
     choose_cache_warm(p, hw, model, req, pol);
     choose_spec(p, base, hw, model, projected, req, pol);
     choose_record_unstreamed(p, model, req);

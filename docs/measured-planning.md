@@ -550,11 +550,14 @@ on a machine whose device reads that same memory, on the cores or every layer on
 (`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
 `no_shared_device_prompt_tps` the load that compared the answers timed,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), and
-whether and with which draft a model drafts (`spec_tps` for its own head, `drafter_tps` for a paired draft
+where a device expert cache's misses upload from, a copy of the experts in the device's own host memory
+or the file's mapping (`staging_tps`, `no_staging_tps`), and whether and with which draft a model drafts (`spec_tps` for its own head, `drafter_tps` for a paired draft
 model, `no_spec_tps` without; each draft's acceptance and width, `spec_accept`/`spec_draft`,
 `drafter_accept`/`drafter_draft`, which the plan prices its other widths from; the draft context
 being created with the target's,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+On a rented card shared with other tenants, the probe that compares the two upload paths named one on
+a load and the other on the next, for 66 against 44 tok/s; once both sides are timed, the rates decide.
 A record from an earlier build may also hold `host_call_tps` and `no_host_call_tps`, from a lookup inside
 the device's graph that is gone; they are read past.
 
@@ -568,8 +571,8 @@ A load that drafts times no side but the draft's own (`spec_tps`, `drafter_tps`)
 count the drafts its verifies accepted, so its rate compares with no side timed without them: on a rented
 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3 for the experts' copy,
 and every load after turned the copy off and decoded 30-40% slower. The session does not time it
-(`record_side_rate` keeps nothing else from a drafting load), and the host call's rule does not ask such a
-load to time its unmeasured side. The device tier's, the width's and the shared-memory device's rules
+(`record_side_rate` keeps nothing else from a drafting load), and the experts' copy's rule does not ask such a
+load to time its unmeasured side, which also waits while a load times a draft. The device tier's, the width's and the shared-memory device's rules
 never serve a side in order to time it: they serve the side measured or priced faster and time that, so a
 drafting load serves what a load without drafts would. The side stays named on such a load, untimed, so a
 failed open still counts against it.
