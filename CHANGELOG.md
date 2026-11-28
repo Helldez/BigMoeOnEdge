@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Draft models** (`--drafter --drafter-file FILE`): a third draft source for speculative
+  decoding, beside the model's own head (`--mtp`) and the n-gram lookup (`--ngram`).
+  - **What it is:** a small network trained for one model and shipped in a GGUF of its own, which
+    reads the model's hidden states and proposes the next tokens; a block-diffusion drafter (DFlash,
+    DSpark) proposes a whole block in one pass. The model verifies the block in one wider decode
+    and keeps only what it would have produced itself, as with the other sources, so nothing is
+    approximated.
+  - **Nothing names a kind of drafter.** What the file is comes from its header, read by llama.cpp's
+    own speculative driver, which also drafts with it; the engine turns that answer into how the
+    file is loaded and what context it drafts in, in one module (`core/src/engine/draft_driver`).
+    A kind the driver learns with a submodule bump needs no change here. A file that is not a draft,
+    or whose vocabulary is not the model's, is refused at load.
+  - **Placement:** `--drafter-on-devices` puts the draft model on the devices the model's layers
+    are on, and with `--auto` the plan decides it by the rule that already places an MTP head file,
+    from the file's size alone.
+  - **`--mtp-p-min`** applies to a draft model too: it is the draft's own confidence floor.
+  - **What is proven, and what is not:** a new test (`drafter_session`) runs a streamed session over
+    the tiny MoE fixture with a tiny drafter generated for it, through draft, verify and rollback
+    on two turns. Off by default. Measured on a 16 GB laptop, it pays only where the experts run on
+    the device from its cache (#741 + #749): Qwen3.6-35B-A3B Q4_K_M with a DFlash drafter at draft 3
+    goes from 24.2 to 37.7 tok/s on code (20.1 to 30.4 on prose), Qwen3.8-Flash-Next Q2_0 from 12.9
+    to 14.8; on main's streamed path it measured no gain (17.0 against 21.4 on code). See
+    [docs/drafter.md](docs/drafter.md).
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed
