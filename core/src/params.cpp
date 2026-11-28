@@ -566,6 +566,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-fill-delay-us", "Device cache fill delay", G::Diagnostics, L::Debug,
+                          "debug: Every fill of the device expert cache started in the background (the "
+                          "read-ahead) fills its slot with ones and waits this many microseconds before it "
+                          "reads, so a lookup that reads a slot before its fill lands shows in the output. 0 is "
+                          "off; not for a real run.");
+        d.value_hint = "US";
+        bounds(d, 0, MoeStreamConfig::device_cache_fill_delay_us_max, "us");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_fill_delay_us; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("device-cache-host-call", "Device cache lookup in the graph", G::Cache, L::Experimental,
                           "With a device expert cache, look up each layer's experts inside the "
                           "device's graph, where the device can wait for the host, instead of splitting the graph "

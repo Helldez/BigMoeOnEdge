@@ -98,9 +98,27 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
 
 ### Changed
+- **Smaller llama.cpp footprint for the device cache, the same behaviour.** The host address of device memory
+  the host writes in place is now a function a backend exports through its registry
+  (`ggml_backend_reg_get_proc_address`), not a new member of every ggml buffer interface: ggml's core headers
+  and the backends that have no such memory are untouched. The read-ahead builds no prediction where it fills
+  nothing ahead (a card with memory of its own), instead of paying the next router's product per layer for
+  statistics. The cache's lend flag for llama.cpp's own tools is gone (bmoe sets it directly).
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.
+
+### Fixed
+- **The device cache's host-call lookup read slots its read-ahead had not filled yet.** The layer before
+  reads the next layer's experts ahead, in the background; the lookup made as a split waited for those
+  reads, the one made as a host call (the last layer at least) did not, so where every expert that layer
+  chose was a hit, one of them could be computed from a slot still holding another expert. On a
+  unified-memory laptop this flipped a token of a greedy answer in one run of many of the same command.
+  The host-call lookup now waits for them too. A new gate (G25h) runs the cache filled in place on a
+  device whose memory the host writes (found from what its backend exports, not from its name), with
+  every background fill held back and its slot set to ones until it lands (debug setting
+  `--device-cache-fill-delay-us`): without the fix the gate fails, with it every answer is the model held
+  whole on that device.
 
 ## [0.50.1] - 2026-11-25
 

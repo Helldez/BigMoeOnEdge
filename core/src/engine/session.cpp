@@ -1580,7 +1580,8 @@ bool Session::Impl::create_contexts(Opening & o) {
     // The device cache's misses read from the file straight into its slots, where the host writes
     // the device's memory (moe/cache_fill.h); refused elsewhere, and the misses are copied as before.
     if (device_cache_armed && cfg.moe.device_cache_fill_lanes > 0) {
-        cache_fill = CacheFill::install(c, cfg.model_path, cfg.moe.device_cache_fill_lanes);
+        cache_fill =
+            CacheFill::install(c, cfg.model_path, cfg.moe.device_cache_fill_lanes, cfg.moe.device_cache_fill_delay_us);
         log_printf(LogLevel::Info,
                    cache_fill ? "device expert cache filled in place from the file, %d lanes\n"
                               : "device expert cache: in-place fill refused (%d lanes asked), misses copied\n",

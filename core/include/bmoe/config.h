@@ -118,10 +118,16 @@ struct MoeStreamConfig {
     // (docs/hardware-planning.md). Needs device_cache_mb.
     float device_cache_cpu_share = 0.0f;
     // How that cache's misses reach it, all lossless (the gates compare each with the plain upload):
-    // - fill lanes: where the host writes the device's memory in place (unified memory; ggml's
-    //   get_host_base), the misses are read from the file straight into the cache's slots by this many
-    //   reader lanes, instead of copied from the mapping. 0 copies from the mapping.
+    // - fill lanes: where the host writes the device's memory in place (unified memory: the backend
+    //   exports ggml_backend_buffer_get_host_base), the misses are read from the file straight into
+    //   the cache's slots by this many reader lanes, instead of copied from the mapping. 0 copies
+    //   from the mapping.
     int device_cache_fill_lanes = 0;
+    // - debug: every fill started in the background (the read-ahead) first fills its slot with
+    //   ones and waits this long before it reads, so a lookup that reads a slot before its fill
+    //   lands computes garbage, and the gates catch it (G25h). 0 is off; never for a real run.
+    int device_cache_fill_delay_us = 0;
+    static constexpr int device_cache_fill_delay_us_max = 1000000;
     // - host call: the slot lookup runs inside the graph where the device can wait for the host
     //   (GGML_OP_HOST_CALL), so a token is one graph instead of a split per layer. Whether one graph
     //   beats the splits is the device's round trip against its sync, so it is measured, not assumed.
@@ -1022,6 +1028,7 @@ template <class Config> Config held_on_cores(Config cfg) {
     cfg.moe.device_cache_mb = 0;
     cfg.moe.device_cache_cpu_share = 0.0f;
     cfg.moe.device_cache_fill_lanes = 0;
+    cfg.moe.device_cache_fill_delay_us = 0;
     cfg.moe.device_cache_host_call = false;
     cfg.moe.device_cache_cpu_threads = 0;
     cfg.moe.device_cache_async_admit = false;
