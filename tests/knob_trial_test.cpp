@@ -754,23 +754,30 @@ int main() {
         mx.mix_gen_tokens = 120.5;
         mx.mix_wide_prompt_tokens = 1054.0;
         mx.host_prefill_tps = 8.64;
-        check(mx.verdicts() == 5, "record: each request of the mix counts, so a front-end keeps the grown record");
+        mx.device_cache_prompt_tps = 2412.5;
+        mx.no_device_cache_prompt_tps = 4150.25;
+        check(mx.verdicts() == 7, "record: each request of the mix counts, so a front-end keeps the grown record");
         std::vector<MeasuredKnobs> mback;
         check(parse_measured_knobs(format_measured_knobs({mx}), mback, err) && mback.size() == 1 &&
                   mback[0].mix_requests == 4 && std::fabs(mback[0].mix_gen_tokens - 120.5) < 1e-9 &&
                   std::fabs(mback[0].mix_wide_prompt_tokens - 1054.0) < 1e-9 &&
-                  std::fabs(mback[0].host_prefill_tps - 8.64) < 1e-9,
-              "record: the request mix reads back as written");
+                  std::fabs(mback[0].host_prefill_tps - 8.64) < 1e-9 &&
+                  std::fabs(mback[0].device_cache_prompt_tps - 2412.5) < 1e-9 &&
+                  std::fabs(mback[0].no_device_cache_prompt_tps - 4150.25) < 1e-9,
+              "record: the request mix and each device-tier side's prompt rate read back as written");
         keep_measured_knobs(back, mx);
         MeasuredKnobs mx2 = mx;
         mx2.mix_requests = 1;
         mx2.mix_gen_tokens = 2000.0;
         mx2.mix_wide_prompt_tokens = 0.0;
-        mx2.host_prefill_tps = 0.0; // every long prompt of this load ran on the device, or there was none
+        mx2.host_prefill_tps = 0.0;           // every long prompt of this load ran on the device, or there was none
+        mx2.device_cache_prompt_tps = 2000.0; // this load served the cache: its side's rate is the latest
+        mx2.no_device_cache_prompt_tps = 0.0;
         keep_measured_knobs(back, mx2);
         const MeasuredKnobs * km = find_measured_knobs(back, a.hardware, "0.35.1");
         check(km && km->mix_requests == 1 && km->mix_gen_tokens == 2000.0 && km->mix_wide_prompt_tokens == 0.0 &&
-                  std::fabs(km->host_prefill_tps - 8.64) < 1e-9 && km->decode_threads == 6,
+                  std::fabs(km->host_prefill_tps - 8.64) < 1e-9 && km->decode_threads == 6 &&
+                  km->device_cache_prompt_tps == 2000.0 && std::fabs(km->no_device_cache_prompt_tps - 4150.25) < 1e-9,
               "record: a later load's mix replaces the mix whole, and keeps the host's prefill rate it did not "
               "measure");
         check(old[0].mix_requests == 0 && old[0].host_prefill_tps == 0.0,

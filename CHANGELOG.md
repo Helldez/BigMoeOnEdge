@@ -43,6 +43,15 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
     goes from 24.2 to 37.7 tok/s on code (20.1 to 30.4 on prose), Qwen3.8-Flash-Next Q2_0 from 12.9
     to 14.8; on main's streamed path it measured no gain (17.0 against 21.4 on code). See
     [docs/drafter.md](docs/drafter.md).
+- **The device tier weighed on whole requests, decode and prompt** (experimental). A device expert
+  cache decodes faster and prefills slower: a prompt's pass wider than 32 tokens is served none of its
+  experts and uploads them all. On a rented 32 GB card with Qwen3.8-Flash-Next, the cache prefilled a
+  4612-token prompt at 2412 tok/s and the fitter's placement at 4138-4167. On a 16 GB unified-memory
+  laptop with Qwen3.6-35B, the cache prefilled at 367-396 tok/s and the stream with its prefill device
+  at 538. Neither path can be switched within a load, so every load with the choice records its side's
+  prompt rate (`device_cache_prompt_tps`, `no_device_cache_prompt_tps`, `--trial-tier-prompts`). Once
+  both are measured, `--auto` keeps the side that serves this machine's request mix sooner, by the rule
+  the shared device already uses ([hardware-planning.md](docs/hardware-planning.md#a-device-expert-cache-weighed-on-whole-requests)).
 - **A device expert cache warmed at load from the model's routing record** (`--device-cache-warm`,
   experimental, fork branch `bmoe/cache-warm-2811`). A cache started empty and paid every expert it
   would hold as a miss inside a decode step. On a rented 32 GB card with Qwen3.8-Flash-Next a cold cache

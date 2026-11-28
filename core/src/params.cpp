@@ -737,6 +737,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-tier-prompts", "Record the device tier's prompt rate", G::Cache, L::Experimental,
+                          "Record the prompt rate of this load's side of the device tier (with or without a device "
+                          "expert cache), over the prompts the request mix counts, so a later plan weighs both "
+                          "sides on whole requests. Times no decode and changes no output; the plan sets it on "
+                          "every load that has that choice.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--trial-tier-prompts", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.trial.tier_prompts; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("trial-host-call", "Measure the device cache lookup", G::Cache, L::Experimental,
                           "Time the decode of this load's side of the device expert cache's lookup, to be compared "
                           "across loads: 1 with --device-cache-host-call, 0 without. -1 times neither. Changes no "

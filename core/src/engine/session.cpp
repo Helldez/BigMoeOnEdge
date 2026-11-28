@@ -377,6 +377,7 @@ struct Session::Impl {
         // ones the host prefilled, with their seconds.
         int mix_requests = 0;
         double mix_gen = 0.0, mix_wide = 0.0, host_wide_tokens = 0.0, host_wide_seconds = 0.0;
+        double tier_wide_tokens = 0.0, tier_wide_seconds = 0.0; // the prompts of the device tier's side
         // What this load decoded over every turn, and the seconds it took: the rate of the side it
         // serves, once the probe has timed its windows (note_request_mix).
         double served_tokens = 0.0, served_seconds = 0.0;
@@ -2698,12 +2699,22 @@ void Session::Impl::note_request_mix(const RunSummary & sum) {
             trials.host_wide_tokens += sum.n_prompt;
             trials.host_wide_seconds += sum.prefill_seconds;
         }
+        if (sum.prefill_seconds > 0.0) {
+            trials.tier_wide_tokens += sum.n_prompt;
+            trials.tier_wide_seconds += sum.prefill_seconds;
+        }
     }
     MeasuredKnobs & r = trials.result;
     r.mix_requests = trials.mix_requests;
     r.mix_gen_tokens = trials.mix_gen / trials.mix_requests;
     r.mix_wide_prompt_tokens = trials.mix_wide / trials.mix_requests;
     if (trials.host_wide_seconds > 0.0) r.host_prefill_tps = trials.host_wide_tokens / trials.host_wide_seconds;
+    // The prompt rate of the device tier's side this load serves, timed or not: a decode rate alone does
+    // not rank the two sides (MeasuredKnobs::device_cache_prompt_tps). A load that drafts is left out, as
+    // for every side (record_side_rate): its draft prefills the prompt too.
+    if (cfg.trial.tier_prompts && !cfg.spec.enabled() && trials.tier_wide_seconds > 0.0)
+        (cfg.moe.device_cache_mb > 0 ? r.device_cache_prompt_tps : r.no_device_cache_prompt_tps) =
+            trials.tier_wide_tokens / trials.tier_wide_seconds;
     // The side this load serves is kept at what the load decoded at, over every turn so far, in place
     // of the probe's windows. The probe times a few dozen tokens early in the first answer, which is
     // where a load happens to be then: after a knob trial on one load and from the first token on the

@@ -160,6 +160,14 @@ struct MeasuredKnobs {
     int mix_requests = 0;
     double mix_gen_tokens = 0.0, mix_wide_prompt_tokens = 0.0;
     double host_prefill_tps = 0.0;
+    // The prompt rate of each side of the device tier (device_cache_tps above), over the same prompts
+    // the mix counts, on every load whose plan has that choice (KnobTrialConfig::tier_prompts), timed
+    // or not. A side's decode alone does not rank it: a device expert cache serves a prompt's wide
+    // passes none of its experts (a pass that wide reads most of a layer's), so each pass uploads them
+    // all, where the fitter's placement holds its layers' experts on the card. Measured on a rented
+    // 32 GB card, Qwen3.8-Flash-Next: the cache decoded faster and prefilled a 4612-token prompt at 2412
+    // tok/s against 4138-4167. So the plan weighs the whole request, its prompt at these rates.
+    double device_cache_prompt_tps = 0.0, no_device_cache_prompt_tps = 0.0;
 
     // Failed opens of each side of a decision across loads, on this machine and engine (the record's
     // own scope): a served load that could not load that configuration, most likely short of device
@@ -272,13 +280,14 @@ struct MeasuredKnobs {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
                (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
                (narrow_prefill_tps > 0.0) + usage_requests + (width_held >= 0) + (decode_compute_s > 0.0) +
-               (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
-               (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) +
-               (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
-               (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
-               (host_call_tps > 0.0) + (no_host_call_tps > 0.0) + (host_call_unviable > 0) + (warm_experts > 0) +
-               (spec_tps > 0.0) + (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) +
-               (drafter_tps > 0.0) + (drafter_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
+               (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_prompt_tps > 0.0) +
+               (no_device_cache_prompt_tps > 0.0) + (device_cache_unviable > 0) + (no_device_cache_unviable > 0) +
+               (wide_unviable > 0) + (narrow_unviable > 0) + (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) +
+               (shared_device_prompt_tps > 0.0) + (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) +
+               (no_shared_device_unviable > 0) + (host_call_tps > 0.0) + (no_host_call_tps > 0.0) +
+               (host_call_unviable > 0) + (warm_experts > 0) + (spec_tps > 0.0) + (no_spec_tps > 0.0) +
+               (spec_unviable > 0) + (no_spec_unviable > 0) + (drafter_tps > 0.0) + (drafter_unviable > 0) +
+               (int) prefill.size() + (int) device_answers.size();
     }
 };
 

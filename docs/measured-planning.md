@@ -559,6 +559,11 @@ model, `no_spec_tps` without; each draft's acceptance and width, `spec_accept`/`
 being created with the target's,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
+Each side of the device tier also has a prompt rate (`device_cache_prompt_tps`, `no_device_cache_prompt_tps`),
+recorded on every load whose plan has that choice over the prompts the request mix counts. Once both are
+measured, the side is chosen on a whole request of the machine's mix rather than on its decode
+([hardware-planning.md](hardware-planning.md#a-device-expert-cache-weighed-on-whole-requests)).
+
 The record also keeps what the last warm of a device expert cache cost (`warm_experts`, `warm_s`), not a
 side but the rate the next plan prices a warm at
 ([hardware-planning.md](hardware-planning.md#a-device-expert-cache-warmed-at-load)). Whatever side a load

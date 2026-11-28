@@ -801,11 +801,10 @@ struct RequestMix {
                           : std::string("none served yet: the default mix");
     }
 };
-RequestMix request_mix(const Planning & s, uint32_t narrow) {
-    const MeasuredKnobs & mk = s.model.knobs;
+RequestMix request_mix(const MeasuredKnobs & mk, const PlannerPolicy & pol, uint32_t narrow) {
     RequestMix r;
-    const double prior = (double) s.pol.mix_prior_requests;
-    const double prompt_default = (double) s.pol.mix_prompt_tokens_default;
+    const double prior = (double) pol.mix_prior_requests;
+    const double prompt_default = (double) pol.mix_prompt_tokens_default;
     const bool served = mk.mix_requests > 0 && (mk.mix_gen_tokens > 0.0 || mk.mix_wide_prompt_tokens > 0.0);
     const double n = served ? (double) mk.mix_requests : 0.0;
     const auto blend = [&](double by_default, double recorded) {
@@ -813,7 +812,7 @@ RequestMix request_mix(const Planning & s, uint32_t narrow) {
     };
     r.served = served ? mk.mix_requests : 0;
     r.prompt = blend(prompt_default, mk.mix_wide_prompt_tokens);
-    r.gen = blend((double) s.pol.mix_gen_tokens_default, mk.mix_gen_tokens);
+    r.gen = blend((double) pol.mix_gen_tokens_default, mk.mix_gen_tokens);
     if (narrow > 0) {
         // The long prompts' tokens where a load counted them against this narrow width; else every
         // recorded prompt token where the mean prompt is itself past it.
@@ -824,6 +823,50 @@ RequestMix request_mix(const Planning & s, uint32_t narrow) {
         r.long_prompt = blend(prompt_default > (double) narrow ? prompt_default : 0.0, recorded);
     }
     return r;
+}
+RequestMix request_mix(const Planning & s, uint32_t narrow) {
+    return request_mix(s.model.knobs, s.pol, narrow);
+}
+
+// The two sides of the device tier weighed on whole requests (MeasuredKnobs::device_cache_prompt_tps):
+// a request's decoded tokens at each side's decode rate and its prompt at each side's prompt rate, once
+// loads here have timed both prompts, by the one rule the shared device's sides are weighed by
+// (bmoe/serving_side.h). The cache is the side in force where `cache_incumbent`, the other side
+// otherwise; the challenger takes over only where a request is shorter on it by the margin. Not weighed (`weighed`
+// false) until both prompt rates are measured: a prompt rate has no price, and a decode alone then decides, as before.
+struct TierWeighing {
+    bool weighed = false;
+    bool challenger_wins = false;
+    std::string words;
+};
+TierWeighing weigh_tier(const MeasuredKnobs & mk,
+                        const PlannerPolicy & pol,
+                        double cache_tps,
+                        double other_tps,
+                        bool cache_incumbent,
+                        const char * other_name) {
+    TierWeighing t;
+    const double cache_prompt = mk.device_cache_prompt_tps, other_prompt = mk.no_device_cache_prompt_tps;
+    if (!(cache_prompt > 0.0) || !(other_prompt > 0.0) || !(cache_tps > 0.0) || !(other_tps > 0.0)) return t;
+    const RequestMix mix = request_mix(mk, pol, 0);
+    const double per_token = mix.gen > 0.0 ? mix.prompt / mix.gen : 0.0;
+    const SideRates cache{cache_tps, cache_prompt}, other{other_tps, other_prompt};
+    const SideWeighing w = cache_incumbent ? weigh_sides(cache, other, per_token, (double) pol.min_backend_win)
+                                           : weigh_sides(other, cache, per_token, (double) pol.min_backend_win);
+    if (!w.weighed) return t;
+    t.weighed = true;
+    t.challenger_wins = w.cores_sooner;
+    const double cache_s = cache_incumbent ? w.device_s : w.cores_s;
+    const double other_s = cache_incumbent ? w.cores_s : w.device_s;
+    char nums[400];
+    std::snprintf(nums, sizeof(nums),
+                  "a request here is %.0f prompt tokens and %.0f decoded (%s); its prompt runs at %.1f tok/s with "
+                  "the device cache and %.1f %s, both measured on loads here, so a request takes %.2fx the time "
+                  "with the cache",
+                  mix.prompt, mix.gen, mix.words().c_str(), cache_prompt, other_prompt, other_name,
+                  other_s > 0.0 ? cache_s / other_s : 0.0);
+    t.words = nums;
+    return t;
 }
 
 // A side of a decision across loads that failed to open here as often as a plan lets it
@@ -1024,7 +1067,7 @@ void choose_device_tier(Planning & s) {
         // Each side at its measurement where a load timed it, at its price otherwise.
         const double cache_at = mk.device_cache_tps > 0.0 ? mk.device_cache_tps : cache_priced;
         const double fitter_at = mk.no_device_cache_tps > 0.0 ? mk.no_device_cache_tps : fitter_priced;
-        char sides[320];
+        char sides[960];
         std::snprintf(
             sides, sizeof(sides),
             "%.2f tok/s with a device cache (%s) against %.2f with the fitter's "
@@ -1045,8 +1088,16 @@ void choose_device_tier(Planning & s) {
         // The fitter's placement takes over only past the cache by the margin: the cache is the side in
         // force wherever the device is the faster processor, and a price is not a reason to leave it on
         // a few percent. A side with no price and no measurement decides nothing.
-        const bool fitter_wins =
-            !lost(mk.no_device_cache_unviable) && cache_at > 0.0 && fitter_at > 0.0 && fitter_at > cache_at * win;
+        // Weighed on whole requests where both sides' prompts were timed here: the cache serves a prompt's
+        // wide passes none of its experts, so its decode alone overstates it on a machine of long prompts.
+        s.p.config.trial.tier_prompts = true;
+        const TierWeighing by_request =
+            weigh_tier(mk, s.pol, cache_at, fitter_at, /*cache_incumbent*/ true, "with the fitter's placement");
+        const bool fitter_wins = !lost(mk.no_device_cache_unviable) && cache_at > 0.0 && fitter_at > 0.0 &&
+                                 (by_request.weighed ? by_request.challenger_wins : fitter_at > cache_at * win);
+        if (by_request.weighed)
+            std::snprintf(sides + std::strlen(sides), sizeof(sides) - std::strlen(sides), "; %s",
+                          by_request.words.c_str());
         if (fitter_wins) {
             if (mk.no_device_cache_tps <= 0.0) s.p.config.trial.device_tier = 0; // served, and timed as it serves
             s.note("device-cache-mb", "0", mk.no_device_cache_tps > 0.0 ? Source::Measured : Source::Derived,
@@ -4552,18 +4603,30 @@ Plan shared_device_cache(Plan p,
         any_measured ? "the " + u64s((uint64_t) (pol.min_backend_win * 100.0f + 0.5f)) + "% margin" : "the other price";
     // The stream is the incumbent: the device takes over only past it by the margin, or where the
     // stream failed to open here; a device that failed to open stays out.
-    const bool device_wins =
-        !lost(mk.device_cache_unviable) && (lost(mk.no_device_cache_unviable) || cache_at > stream_at * win);
+    // Weighed on whole requests where both sides' prompts were timed here (weigh_tier): the stream's
+    // prompts run on its prefill device, the cache's in passes that read most of a layer's experts.
+    // Measured on a 16 GB unified-memory laptop, Qwen3.6-35B, a 3022-token prompt: 538 tok/s streamed
+    // with the prefill device against 367-396 from the cache, which decoded faster.
+    p.config.trial.tier_prompts = true;
+    const TierWeighing by_request =
+        weigh_tier(mk, pol, cache_at, stream_at, /*cache_incumbent*/ false, "streamed on the cores");
+    const bool device_wins = !lost(mk.device_cache_unviable) &&
+                             (lost(mk.no_device_cache_unviable) ||
+                              (by_request.weighed ? by_request.challenger_wins : cache_at > stream_at * win));
+    const std::string weighed = by_request.weighed ? "; " + by_request.words : std::string();
     Decision d;
     d.knob = "device-cache-mb";
     if (!device_wins) {
         d.value = "0";
         d.source = mk.no_device_cache_tps > 0.0 || mk.device_cache_tps > 0.0 ? Source::Measured : Source::Derived;
-        d.brief = "Streamed on the cores: on this machine that decodes at least as fast as " + dev->name +
-                  " from a cache in this memory.";
-        d.reason = std::string(sides) + (lost(mk.device_cache_unviable)
-                                             ? "; loads with the device cache failed on this machine"
-                                             : ", not past " + margin);
+        d.brief = by_request.weighed ? "Streamed on the cores: on this machine that serves a request at least as "
+                                       "fast as " +
+                                           dev->name + " from a cache in this memory."
+                                     : "Streamed on the cores: on this machine that decodes at least as fast as " +
+                                           dev->name + " from a cache in this memory.";
+        d.reason = std::string(sides) + weighed +
+                   (lost(mk.device_cache_unviable) ? "; loads with the device cache failed on this machine"
+                                                   : ", not past " + margin);
         // The stream serving here is timed, so the next plan reads it against the cache's price.
         if (mk.no_device_cache_tps <= 0.0) p.config.trial.device_tier = 0;
         p.decisions.push_back(d);
@@ -4618,7 +4681,7 @@ Plan shared_device_cache(Plan p,
     d.source = mk.device_cache_tps > 0.0 ? Source::Measured : Source::Derived;
     d.brief = "Every layer on " + dev->name + ", its experts from a " + size_brief(cache_bytes) +
               " cache in this memory filled from the file.";
-    d.reason = std::string(sides) + ", past " + margin +
+    d.reason = std::string(sides) + weighed + ", past " + margin +
                "; the streaming plan's expert cache becomes the device's (the same memory), its misses "
                "read into the slots on " +
                u64s(lanes) + " lanes and the next layer's " + u64s(m.n_expert_used) +

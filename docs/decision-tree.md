@@ -806,6 +806,8 @@ flowchart TD
 - Both sides are priced: the stream at its own allocation, the device from its rates, the model's hit
   curve at the stream's cache size and the storage rate at the expert slice. A side a load measured
   (`device_cache_tps`, `no_device_cache_tps`) stands at its measurement.
+- Every load here records its side's prompt rate (`trial.tier_prompts`); once both are measured, a
+  whole request of the machine's mix is weighed, as in `plan.tier.measured`.
 - The device wins past the stream by `min_backend_win` once a side is measured, and on two prices alone
   the faster price wins → every layer on it, the experts
   overridden to the host, the stream's cache becomes `device_cache_mb`, `device_cache_fill_lanes` =
@@ -898,8 +900,12 @@ flowchart TD
 - condition: `if (lost(mk.device_cache_unviable)) {`
 - condition: `if (fitter_wins) {`
 - Each side's rate is the measured tps where one exists, else the price.
+- Every load here records its side's prompt rate (`trial.tier_prompts`). Once both sides' prompt
+  rates are measured (`device_cache_prompt_tps`, `no_device_cache_prompt_tps`), a whole request of the
+  machine's mix is weighed (`weigh_tier`, `weigh_sides`): its decoded tokens at each side's decode rate,
+  its prompt at each side's prompt rate.
 - Device cache lost to failures (2 or more) → off.
-- The fitter's own placement 10% faster → off. With no measured tps for it,
+- The fitter's own placement 10% faster (on the request where both prompts are timed) → off. With no measured tps for it,
   `trial.device_tier = 0` times it on this load.
 - Otherwise → the cache is armed. With no measured tps for it, `trial.device_tier = 1`.
 

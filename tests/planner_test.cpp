@@ -4605,6 +4605,41 @@ int main() {
                               " draft: the measured side serves");
                 }
             }
+            // Each side's prompt timed on its loads: the request decides. The cache decodes faster (20 against
+            // 15 tok/s) and its prompt's wide passes upload every expert (2412 tok/s against the fitter's 4150).
+            {
+                check(tier.config.trial.tier_prompts,
+                      "device tier: every load with the choice records its prompt rate");
+                MeasuredKnobs both;
+                both.device_cache_tps = 20.0;
+                both.no_device_cache_tps = 15.0;
+                both.device_cache_prompt_tps = 2412.0;
+                both.no_device_cache_prompt_tps = 4150.0;
+                both.mix_requests = 1000;
+                const auto with_mix = [&](double prompt, double gen) {
+                    MeasuredKnobs k = both;
+                    k.mix_wide_prompt_tokens = prompt;
+                    k.mix_gen_tokens = gen;
+                    return tier_on(slow_cores, k);
+                };
+                const Plan chat = with_mix(40.0, 256.0);
+                const Decision * e2 = find(chat, "device-cache-mb");
+                check(chat.config.moe.device_cache_mb > 0 && e2 &&
+                          e2->reason.find("request here is") != std::string::npos,
+                      "device tier, prompts timed: short prompts and long answers keep the cache",
+                      e2 ? e2->reason : "no decision");
+                const Plan docs = with_mix(4612.0, 16.0);
+                e2 = find(docs, "device-cache-mb");
+                check(docs.config.moe.device_cache_mb == 0 && e2 && e2->value == "0" && docs.config.trial.tier_prompts,
+                      "device tier, prompts timed: long prompts and short answers keep the fitter's placement",
+                      e2 ? e2->reason : "no decision");
+                MeasuredKnobs one = both;
+                one.no_device_cache_prompt_tps = 0.0;
+                one.mix_wide_prompt_tokens = 4612.0;
+                one.mix_gen_tokens = 16.0;
+                check(tier_on(slow_cores, one).config.moe.device_cache_mb > 0,
+                      "device tier, one side's prompt timed: the decode decides, as before");
+            }
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;
             check(tier_on(slow_cores, under).config.trial.device_tier == 0,
@@ -5363,6 +5398,43 @@ int main() {
                       unlent.config.graph_width() == unlent.config.fallback->graph_width(),
                   "shared cache: lending typed off keeps the stream's width");
         }
+        // Each side's prompt timed on its loads: the request decides, decode and prompt together. The cache
+        // decodes faster (40 against 30 tok/s), and the stream's prompt runs on its prefill device at 538 tok/s
+        // against the cache's 380.
+        check(on.config.trial.tier_prompts && (!on.config.fallback || on.config.fallback->trial.tier_prompts),
+              "shared cache: every load with the choice records its side's prompt rate");
+        ModelProfile timed = model;
+        timed.knobs.device_cache_tps = 40.0;
+        timed.knobs.no_device_cache_tps = 30.0;
+        timed.knobs.set_device_answer(acc.name, 1);
+        timed.knobs.device_cache_prompt_tps = 380.0;
+        timed.knobs.no_device_cache_prompt_tps = 538.0;
+        const auto with_mix = [&](double prompt, double gen) {
+            ModelProfile mm = timed;
+            mm.knobs.mix_requests = 1000;
+            mm.knobs.mix_wide_prompt_tokens = prompt;
+            mm.knobs.mix_gen_tokens = gen;
+            return plan_run(long_ctx, uma, mm, pl, PlanRequest{}, PlannerPolicy::defaults());
+        };
+        const Plan chat = with_mix(40.0, 256.0);
+        d = find(chat, "device-cache-mb");
+        check(chat.config.moe.device_cache_mb > 0 && d && d->reason.find("request here is") != std::string::npos,
+              "shared cache, prompts timed: short prompts and long answers keep the cache",
+              d ? d->reason : "no decision");
+        const Plan docs = with_mix(3022.0, 64.0);
+        d = find(docs, "device-cache-mb");
+        check(docs.config.moe.device_cache_mb == 0 && docs.config.moe.enabled && d && d->value == "0" &&
+                  docs.config.trial.tier_prompts,
+              "shared cache, prompts timed: long prompts and short answers keep the stream",
+              d ? d->reason : "no decision");
+        ModelProfile one = timed;
+        one.knobs.no_device_cache_prompt_tps = 0.0;
+        one.knobs.mix_requests = 1000;
+        one.knobs.mix_wide_prompt_tokens = 3022.0;
+        one.knobs.mix_gen_tokens = 64.0;
+        const Plan half_timed = plan_run(long_ctx, uma, one, pl, PlanRequest{}, PlannerPolicy::defaults());
+        check(half_timed.config.moe.device_cache_mb > 0,
+              "shared cache, one side's prompt timed: the decode decides, as before");
     }
 
     // ── a draft where the plan serves from a device expert cache ──

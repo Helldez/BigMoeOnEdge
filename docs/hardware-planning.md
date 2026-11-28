@@ -1340,6 +1340,48 @@ the file's own bytes, on the host and on every device. A host and a device are a
 same experiment: the real layer where both ran it, the synthetic GEMV (which also sweeps the thread
 count) otherwise.
 
+### A device expert cache weighed on whole requests
+
+A device expert cache decodes faster than the side without it, and prefills slower. Measured:
+- **Rented 32 GB card, Qwen3.8-Flash-Next Q2_0, a 4612-token prompt:** the cache prefilled at 2412
+  tok/s; the fitter's placement prefilled at 4138-4167 tok/s.
+- **16 GB unified-memory laptop, Qwen3.6-35B, a 3022-token prompt:** the cache prefilled at 367-396
+  tok/s; the stream with its prefill device prefilled at 538 tok/s.
+
+The cause is in how the cache serves a pass. A pass wider than 32 tokens reads most of a layer's
+experts, so llama.cpp's cache serves it none of them (`max_batch`). Each such pass reads every expert
+from the host, and the cache's bytes on the card go unused. The fitter's placement holds its layers'
+experts on the card as weights, and the pass uploads only the rest.
+
+**Neither path can be switched for a prompt and back for the answer within one load:**
+- On a card, the fitter's placement and the cache put the experts in different buffers. Both are fixed
+  when the model is loaded.
+- On a shared-memory machine, the stream's prefill device rebinds a model loaded on the cores. The
+  cache side loads every layer on the device and refuses a prefill device
+  (`{device-cache-mb} does not combine with {prefill-device}`).
+- Lending the cache to a prompt (`device-cache-lend`) gives a pass the cache's memory for a wider
+  graph. A pass still reads its experts from the host, so it does not reach the fitter's rate on a
+  card whose graph is already at its widest.
+
+**So the choice is made per machine, on whole requests, across loads:**
+- Every load that has the choice records the prompt rate of the side it serves
+  (`trial.tier_prompts`). The record keeps `device_cache_prompt_tps` and `no_device_cache_prompt_tps`,
+  measured over the same prompts the request mix counts. A load that drafts records none, as for every
+  side.
+- Once both rates are measured, the device tier (`plan.tier.measured`) and the shared-memory cache
+  (`plan.shared-cache`) weigh a request of this machine's mix. They use the one rule the shared device
+  uses (`weigh_sides`): its decoded tokens at each side's decode rate, and its prompt at each side's
+  prompt rate.
+- The side in force keeps the model unless the request is shorter on the other by the margin. Until
+  both prompt rates are measured, the decode decides, as before.
+
+On the card above, a request of a 4612-token prompt and 16 decoded tokens keeps the fitter's placement.
+Short prompts with long answers keep the cache. That is the planner tests' case, not a run.
+
+The fix that would end the trade is in llama.cpp's cache: a wide pass reading the experts the cache
+holds in place and uploading only the others. It is a change to the fork's cache, outside this
+engine, and is proposed rather than made.
+
 ### A device expert cache warmed at load
 
 A device expert cache starts empty and fills on its misses, so a short session pays every expert it

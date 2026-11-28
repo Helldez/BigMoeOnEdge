@@ -811,6 +811,11 @@ struct KnobTrialConfig {
     // across loads (MeasuredKnobs::host_call_tps): 1 times the decode with it, 0 without it; -1
     // neither. It is fixed when the context is created, so a side is timed by a load that serves it.
     int host_call_side = -1;
+    // The load's plan has the device tier's choice (device_cache_tps against no_device_cache_tps), timed
+    // or not: it records the prompt rate of the side it serves (MeasuredKnobs::device_cache_prompt_tps,
+    // no_device_cache_prompt_tps), over the prompts the request mix counts, so the plan can weigh the
+    // whole request on each side. Times no decode and switches nothing.
+    bool tier_prompts = false;
     // Whether the model drafts, and with which draft, decided across loads (MeasuredKnobs::spec_tps,
     // drafter_tps, no_spec_tps): spec_side_head times the decode with the model's own head drafting
     // (spec=mtp), spec_side_drafter with the draft model paired with it (spec=drafter), 0 without a

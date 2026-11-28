@@ -245,6 +245,13 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             std::snprintf(num, sizeof(num), "%.3f", kv.second);
             out += std::string(" ") + kv.first + "=" + num;
         }
+        // Each device-tier side's prompt rate: written once one is measured, read past by an older engine.
+        if (r.device_cache_prompt_tps > 0.0 || r.no_device_cache_prompt_tps > 0.0) {
+            std::snprintf(num, sizeof(num), "%.3f", r.device_cache_prompt_tps);
+            out += std::string(" device_cache_prompt_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.3f", r.no_device_cache_prompt_tps);
+            out += std::string(" no_device_cache_prompt_tps=") + num;
+        }
         // Failed opens: written only when there is one, so a record without any reads as it always
         // did; an older engine reads past the key.
         std::string unviable;
@@ -403,6 +410,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.mix_wide_prompt_tokens);
             else if (k == "host_prefill_tps")
                 ok = as_double(r.host_prefill_tps);
+            else if (k == "device_cache_prompt_tps")
+                ok = as_double(r.device_cache_prompt_tps);
+            else if (k == "no_device_cache_prompt_tps")
+                ok = as_double(r.no_device_cache_prompt_tps);
             else if (k == "unviable")
                 ok = parse_unviable(v, r);
             else if (k == "shared_device_unviable_free_mib")
@@ -429,6 +440,7 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.decode_threads < 0 || !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) ||
             r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 || r.mix_requests < 0 ||
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
+            !(r.device_cache_prompt_tps >= 0.0) || !(r.no_device_cache_prompt_tps >= 0.0) ||
             !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
             !(r.no_shared_device_prompt_tps >= 0.0) || !(r.host_call_tps >= 0.0) || !(r.no_host_call_tps >= 0.0) ||
             r.warm_experts < 0 || !(r.warm_s >= 0.0) || !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) ||
@@ -539,6 +551,8 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.mix_wide_prompt_tokens = rec.mix_wide_prompt_tokens;
             }
             if (rec.host_prefill_tps > 0.0) r.host_prefill_tps = rec.host_prefill_tps;
+            if (rec.device_cache_prompt_tps > 0.0) r.device_cache_prompt_tps = rec.device_cache_prompt_tps;
+            if (rec.no_device_cache_prompt_tps > 0.0) r.no_device_cache_prompt_tps = rec.no_device_cache_prompt_tps;
             // Each device's word is the latest load's: an armed load says unconfirmed, and the session
             // that opened says what came of it. A session that could not open the device (verdict 0, no
             // count) is one more load that did not keep it: the count the front-end wrote stands, or
