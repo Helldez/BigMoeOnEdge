@@ -243,6 +243,7 @@ Decode in tokens per second, `--auto`, one stream. A range is the spread across 
 |---|---|---|---:|---|---:|
 | **Desktop GPU** (NVIDIA) | 24 GB + 23 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 156 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | flash, GPU cache | 16-19 |
+|  |  | Inkling 2 Mini | 17 GB | GPU | 61 |
 | **Desktop GPU** (NVIDIA) | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, GPU cache | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 45-51 |
 

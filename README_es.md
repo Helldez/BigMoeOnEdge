@@ -247,6 +247,7 @@ Decodificación en tokens por segundo, `--auto`, un solo flujo. Un rango es la v
 |---|---|---|---:|---|---:|
 | **GPU de escritorio** (NVIDIA) | 24 GB + 23 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 156 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 16-19 |
+|  |  | Inkling 2 Mini | 17 GB | GPU | 61 |
 | **GPU de escritorio** (NVIDIA) | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 45-51 |
 

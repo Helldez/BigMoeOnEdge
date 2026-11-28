@@ -228,6 +228,7 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 |---|---|---|---:|---|---:|
 | **桌面 GPU**（NVIDIA） | 24 GB + 23 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 156 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 16-19 |
+|  |  | Inkling 2 Mini | 17 GB | GPU | 61 |
 | **桌面 GPU**（NVIDIA） | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 45-51 |
 
