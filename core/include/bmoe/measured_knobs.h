@@ -70,13 +70,6 @@ struct MeasuredKnobs {
     double shared_device_prompt_tps = 0.0;
     double no_shared_device_prompt_tps = 0.0;
 
-    // Whether a device expert cache looks its experts up inside the device's graph (the host call,
-    // RunConfig MoeStreamConfig::device_cache_host_call), decided across loads (planner.cpp,
-    // choose_host_call): the decode rate with it and without it, in tokens per second, 0 when that side
-    // was not measured. It is fixed when a context is created, so a load times the side it serves. No
-    // probe predicts it: on a 12 GB CUDA card it decoded 5% faster and on a unified-memory laptop slower.
-    double host_call_tps = 0.0;
-    double no_host_call_tps = 0.0;
     // Whether a model held whole drafts with its own MTP block, decided across loads (planner.cpp,
     // choose_spec): the decode rate with the head drafting and without, in tokens per second as a
     // person reads them (accepted tokens over the time spent), 0 when that side was not measured. The
@@ -169,7 +162,6 @@ struct MeasuredKnobs {
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
-    int host_call_unviable = 0;
     int spec_unviable = 0, no_spec_unviable = 0, drafter_unviable = 0;
     // What the device the model failed to open on said it had free when it failed, in MiB, as its
     // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
@@ -271,9 +263,8 @@ struct MeasuredKnobs {
                (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) +
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
                (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
-               (host_call_tps > 0.0) + (no_host_call_tps > 0.0) + (host_call_unviable > 0) + (spec_tps > 0.0) +
-               (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) + (drafter_tps > 0.0) +
-               (drafter_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
+               (spec_tps > 0.0) + (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) +
+               (drafter_tps > 0.0) + (drafter_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
     }
 };
 

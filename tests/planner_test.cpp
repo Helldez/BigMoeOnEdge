@@ -4452,35 +4452,6 @@ int main() {
                       "device tier, the cache measured past the fitter's price: kept, the other side never opened",
                       e ? e->reason : "no decision");
             }
-            // The cache kept on a measured rate: the next load looks its experts up inside the device's
-            // graph and times it; with both sides measured the faster serves and nothing is timed again.
-            {
-                MeasuredKnobs kept;
-                kept.device_cache_tps = 20.0;
-                const Plan hc = tier_on(slow_cores, kept);
-                const Decision * h = find(hc, "device-cache-host-call");
-                check(hc.config.moe.device_cache_host_call && hc.config.trial.host_call_side == 1 && h &&
-                          h->source == Source::Derived && validate(hc.config).ok &&
-                          (!hc.config.fallback || !hc.config.fallback->moe.device_cache_host_call),
-                      "host call, the cache's side measured: served with the lookup in the graph and timed",
-                      h ? h->reason : "no decision");
-                kept.host_call_tps = 21.0;
-                const Plan faster = tier_on(slow_cores, kept);
-                check(faster.config.moe.device_cache_host_call && faster.config.trial.host_call_side == -1,
-                      "host call, measured faster: kept, not timed again");
-                kept.host_call_tps = 19.0;
-                const Plan slower = tier_on(slow_cores, kept);
-                check(!slower.config.moe.device_cache_host_call && slower.config.trial.host_call_side == -1,
-                      "host call, measured slower: off, not timed again");
-                kept.host_call_tps = 0.0;
-                kept.host_call_unviable = MeasuredKnobs::unviable_max;
-                const Plan failed = tier_on(slow_cores, kept);
-                check(!failed.config.moe.device_cache_host_call && failed.config.trial.host_call_side == -1,
-                      "host call, failed to open here: off");
-                // A load still timing the cache's own side leaves the lookup alone.
-                check(!tier.config.moe.device_cache_host_call && tier.config.trial.host_call_side == -1,
-                      "host call, the device tier still timed: one trial at a time");
-            }
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;
             check(tier_on(slow_cores, under).config.trial.device_tier == 0,
@@ -5266,7 +5237,6 @@ int main() {
         long_ctx.n_ctx = 16384;
         ModelProfile settled = model;
         settled.knobs.device_cache_tps = 40.0; // the cache side timed, and faster than the stream's price
-        settled.knobs.host_call_tps = 30.0;    // the host call timed, and slower than without it
         settled.knobs.set_device_answer(acc.name, 1);
         ModelProfile headed = settled;
         headed.has_mtp = true;
@@ -5390,7 +5360,6 @@ int main() {
         headed.has_mtp = true;
         headed.knobs.device_cache_tps = 40.0;
         headed.knobs.no_device_cache_tps = 20.0;
-        headed.knobs.host_call_tps = 30.0;
         PlanRequest keep;
         keep.measure_knobs = true;
         const Plan p = plan_run(base_cfg(), card, headed, half, keep, PlannerPolicy::defaults());
@@ -5516,7 +5485,6 @@ int main() {
         both.drafter.n_block = 5;
         both.drafter.target_layers = 5;
         both.knobs.device_cache_tps = 40.0;
-        both.knobs.host_call_tps = 30.0;
         both.knobs.set_device_answer(acc.name, 1);
         // The model's routing replayed as verifies: a curve that serves `hit` of a verify's union at any
         // cache this plan gives, the union `cycles` token cycles' bytes.

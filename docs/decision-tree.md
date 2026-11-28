@@ -559,7 +559,6 @@ flowchart TD
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
     plan_record_unstreamed["<b>plan.record-unstreamed</b><br/>A run that does not stream records its routing where no record exists"]
-    plan_host_call["<b>plan.host-call</b><br/>A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
     plan_tier_rates["<b>plan.tier.rates</b><br/>The device must read experts faster than the host"]
@@ -629,8 +628,7 @@ flowchart TD
     plan_backends -.-> plan_held_whole
     plan_held_whole -.-> plan_shared_cache
     plan_shared_cache -.-> plan_record_unstreamed
-    plan_record_unstreamed -.-> plan_host_call
-    plan_host_call -.-> plan_unplannable
+    plan_record_unstreamed -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
     plan_width -.-> plan_draft_home
@@ -824,18 +822,6 @@ flowchart TD
   and the drafts (`plan.spec`) on it. A pinned `record-unstreamed` is kept.
 - Only on a load that times nothing (no trial of any kind and no answer check): a rate measured beside
   the barriers would carry them. Until then the loads that time a side decide unpriced.
-
-#### `plan.host-call` — A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]
-- parent: —
-- code: `core/src/plan/planner.cpp` · `choose_host_call`
-- condition: `if (t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0) return;`
-- It runs last, on any plan with a device expert cache (`device_cache_mb > 0`), when neither
-  `device-cache-host-call` nor `trial-host-call` is pinned and no other cross-load side is timed.
-- The cache's side needs a rate first (`no_host_call_tps`, or `device_cache_tps`, timed without it).
-- Loads with it failed `unviable_max` times (`host_call_unviable`) → off.
-- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it; a load that drafts
-  (`spec.enabled()`) is left alone, since it times no side.
-- Both measured → the faster serves, and nothing is timed again.
 
 #### `plan.unplannable` — Nothing to plan: unknown model, dense model, unknown memory
 - parent: —
@@ -1216,7 +1202,7 @@ flowchart TD
 - code: `core/src/plan/planner.cpp` · `choose_spec`
 - condition: `if (all.empty() || !req.measure_knobs) return;`
 - condition: `} else if (!verify_reads_held(a.config, m, d, a.where)) {`
-- Asked by `plan_run` on the plan as it will serve, after `plan.host-call`. The model has a draft
+- Asked by `plan_run` on the plan as it will serve. The model has a draft
   (`draft_options`: its own MTP head, and a draft model the front-end paired with it,
   `ModelProfile::drafter`), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are
   not pinned, no draft is armed, and this load times no other side and checks no device's answers.

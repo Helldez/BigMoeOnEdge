@@ -153,16 +153,6 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("{trial-spec} 0 times the decode without a draft: it needs {spec} off");
     if (cfg.trial.shared_device_side == 1 && cfg.n_gpu_layers == 0)
         return fail("{trial-shared-device} 1 times the model on a device: it needs {gpu-layers} above 0");
-    if (cfg.trial.host_call_side < -1 || cfg.trial.host_call_side > 1)
-        return fail("{trial-host-call} is the host call's side a load measures: -1 (none), 0 or 1");
-    if (cfg.trial.host_call_side >= 0 &&
-        (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0 || cfg.trial.shared_device_side >= 0))
-        return fail("{trial-host-call} and {trial-device-cache}, {trial-width} or {trial-shared-device} each time a "
-                    "load's decode: one at a time");
-    if (cfg.trial.host_call_side >= 0 && cfg.moe.device_cache_mb <= 0)
-        return fail("{trial-host-call} times the device expert cache's lookup: it needs {device-cache-mb}");
-    if (cfg.trial.host_call_side >= 0 && cfg.trial.host_call_side != (cfg.moe.device_cache_host_call ? 1 : 0))
-        return fail("{trial-host-call} names the side this load serves: 1 with {device-cache-host-call}, 0 without");
     // The answer check compares a model held whole in memory on a device with the same file on the
     // cores, and reopens on the cores where they differ: there has to be a device placement to compare,
     // and nothing in the load that only a device placement can carry.
@@ -197,9 +187,6 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("{device-cache-cpu-share} is a share of the device cache's misses: from 0 to 1");
     if (cfg.moe.device_cache_cpu_share > 0.0f && cfg.moe.device_cache_mb <= 0)
         return fail("{device-cache-cpu-share} splits the misses of a device expert cache: it needs {device-cache-mb}");
-    if (cfg.moe.device_cache_lend && cfg.moe.device_cache_async_admit)
-        return fail("{device-cache-lend} lends the cache's memory to a prompt, which writes over the zero slots "
-                    "{device-cache-async-admit} needs: set one of them");
     if (cfg.moe.device_cache_lend && cfg.moe.device_cache_cpu_share > 0.0f)
         return fail("{device-cache-lend} lends the cache's memory to a prompt, which writes over the zero slots "
                     "{device-cache-cpu-share} needs: set one of them");
