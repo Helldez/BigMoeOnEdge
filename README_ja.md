@@ -6,6 +6,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Helldez/BigMoeOnEdge/releases/latest"><img src="https://img.shields.io/github/v/release/Helldez/BigMoeOnEdge" alt="最新リリース"></a>
   <a href="https://github.com/Helldez/BigMoeOnEdge/actions/workflows/ci.yml"><img src="https://github.com/Helldez/BigMoeOnEdge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="ライセンス"></a>
@@ -14,10 +18,9 @@
 
 > これは翻訳です。英語版 README が正であり、そちらの方が新しい場合があります。
 
-デバイスのメモリより大きな Mixture-of-Experts モデルを実行します。エキスパートは、モデルが必要とするときにフラッシュから読み込まれます。
-Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築されています。
-統合ストリーミングフレームワーク：スマートフォン、ノート PC から、コンシューマー向け GPU、データセンター向け GPU まで。あらゆるハードウェア、OS、モデル、量子化に対応します。
-リソースの割り当ては自動で、tok/s を最大化するようその構成に合わせて調整されます。
+デバイスのメモリより大きな Mixture-of-Experts モデルを実行します。エンジンは、すべてのトークンで必要な重みと、よく使われるエキスパートをメモリに保持し、
+残りはモデルが求めるときにフラッシュから読み込みます。スマートフォン、ノート PC、デスクトップ GPU、データセンター GPU のための 1 つのエンジンで、
+Android、iOS、macOS、Windows、Linux に対応します。マシンとモデルを計測し、自動で設定します。llama.cpp の上に構築されています。
 
 <table align="center">
 <tr>
@@ -36,7 +39,7 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 </tr>
 </table>
 
-Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモデルです。GGUF 形式の MoE モデルであれば、どの量子化でも動作します。デコード速度は[パフォーマンス](#パフォーマンス)の表の値です。
+Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモデルです。GGUF 形式の MoE モデルであれば、どの量子化でも動作します。マシンとリリースごとの速度：[パフォーマンス](#パフォーマンス)。
 
 **2021 年のノート PC、GPU なしでのエージェント**：話題のボクセル五重塔プロンプトを、16 GB の RAM を積んだ ThinkPad（CPU のみ）上の内蔵エージェントに、Qwen3.6-35B-A3B Q4_K_M で渡しました。2.3 tok/s で 988 行を書き、その後アプリのプレビューでページを表示します。早送りの箇所は画面に表示しています。
 
@@ -48,38 +51,38 @@ Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモ�
 - **自動で設定します。** `--auto` はマシンとモデルを計測し、キャッシュサイズ、スレッド数、どのデバイスが何を処理するかを決めます。Plan 画面には、それぞれの選択とその理由が表示されます。
 - **任意の MoE GGUF。** llama.cpp が読み込めるものなら、どの量子化でも使えます。モデルごとのコードはありません。
 - **すべてのバックエンド。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL、Hexagon NPU。グラフィックカードでは、よく使われるエキスパートが VRAM に残ります。
-- **アプリとサーバー。** デスクトップアプリ、スマートフォンアプリ、そしてコーディングエージェント向けの OpenAI・Anthropic 互換サーバーがあります。
+- **アプリとサーバー。** デスクトップアプリ、スマートフォンアプリ、コーディングエージェント向けの OpenAI・Anthropic 互換サーバー、そしてデスクトップアプリには独自のエージェントがあります。
 - **画像を読めます。** モデルのプロジェクターファイル（`mmproj`）をモデルの横に置くと、サーバーはすべての API で画像を読み込みます。CLI では `--mmproj` と `--image` を使います。llama.cpp のプロジェクターライブラリが対応するビジョンモデルなら、どの量子化でも、すべてのバックエンドで動きます。
 
-## パフォーマンス
+## プラットフォーム
 
-| ハードウェア | メモリ | モデル | ディスク上のサイズ | エキスパートの読み出し元 | デコード tok/s |
-|---|---|---|---:|---|---:|
-| **Android スマートフォン** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | フラッシュ | 1 |
-|  |  | Qwen3.8-Flash-Next 125B | 80 GB | フラッシュ | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5-6 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 6 |
-| **Apple silicon ノート PC** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | フラッシュ | 7-9 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 18-24 |
-| **Windows ノート PC** | 16 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
-| **デスクトップ GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM、GPU キャッシュ | 16-17 |
-| **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
-| **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **デスクトップ GPU**（NVIDIA） | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
-|  | うち 12 GB が空き | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 59-67 |
-|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
-|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **デスクトップ GPU**（NVIDIA） | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 16 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 37-44 |
-| **デスクトップ GPU ×2**（NVIDIA） | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 41-48 |
-|  |  | DeepSeek V4 Flash 284B | 91 GB | フラッシュ、GPU キャッシュ | 5 |
-| **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+| | Android | iOS | macOS | Windows | Linux |
+|---|---|---|---|---|---|
+| エンジンと CLI | arm64 | arm64（アプリ内） | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
+| アプリ | ネイティブアプリ（APK） | ネイティブアプリ、TestFlight ベータ | デスクトップアプリ（`.dmg`） | デスクトップアプリ（インストーラー） | デスクトップアプリ（AppImage） |
+| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan。arm64 では OpenCL と Hexagon NPU | CUDA, HIP (AMD ROCm), Vulkan |
+| 実行環境 | 12 GB スマートフォン | 12 GB iPhone | 16 GB ノート PC | 16 GB ノート PC。フィールドレポートでは NVIDIA のノート PC とデスクトップ | レンタルした 8〜96 GB の NVIDIA カード、192 GB の AMD カード（ROCm） |
 
-範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
-[docs/benchmarks.md](docs/benchmarks.md)。自分のマシンを追加するには、
-`scripts/bench-report.sh model.gguf` を実行して
-[ベンチマークレポート](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)を作成してください。
+それぞれで計測済みのもの、提供済みのもの、まだ残っているもの：[docs/platforms.md](docs/platforms.md)。
+
+## 他のエンジンとの比較
+
+| | **BigMoeOnEdge** | llama.cpp | Strata | Lucebox | ds4 | colibri | KTransformers |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Android スマートフォン（NPU も） | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| iPhone | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Mac | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| CPU のみ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AMD | ✅ ROCm、MI300X も | ✅ | Radeon RX、Strix Halo | R9700、Ryzen AI MAX+ | Strix Halo | Vulkan | ✅ |
+| モデル | GGUF の任意の MoE | 任意の GGUF | リスト掲載のモデル。0.2.23 以降は自分のファイルも | リスト掲載のモデル | 独自の GGUF | 独自形式。GGUF はインポートで | リスト掲載のファミリー |
+| RAM を超えるエキスパート | フラッシュからストリーミング | OS のページキャッシュ | プランナーが SSD に分散 | SSD からストリーミング（DeepSeek V4.1） | SSD からストリーミング | ディスクからストリーミング | RAM に保持 |
+| 自動設定 | ✅ `--auto`、計測に基づく | `--fit` | メモリに応じてモデルを選択 | GPU の組み合わせごとのプロファイル | エキスパートキャッシュの予算 | `coli setup`、`coli tune` | ❌ |
+
+各エンジンが動作する環境と、それぞれが公表している速度（2026-11-28 に確認）：
+[docs/comparison.md](docs/comparison.md)。同じマシンでの比較：
+[パフォーマンス](#パフォーマンス)。
 
 ## インストール
 
@@ -91,7 +94,8 @@ Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモ�
 - **Linux**：`.AppImage` に実行権限を付けて実行します。ウィンドウには WebKitGTK 4.1 が必要です。
   `--server` でサーバーのみを実行します。
 - **Android**：`app-dev-release.apk` をインストールします。各リリースは前のバージョンの上にインストールされます。
-- **iOS**：[examples/ios](examples/ios/README.md) から Xcode でビルドします。実験的な対応です。
+- **iOS**：コントリビューターがリリースタグからビルドしている [TestFlight ベータ](https://testflight.apple.com/join/fKks3qjJ)に参加するか、
+  [examples/ios](examples/ios/README.md) から Xcode でビルドします。実験的な対応です。
 
 アプリを開き、**Models** でモデルを選びます。NVIDIA や AMD のカードは、そのバックエンドを
 **Settings** から入手します（[docs/desktop-app.md](docs/desktop-app.md)）。
@@ -130,6 +134,9 @@ print(reply.choices[0].message.content)
 Claude Code には 65536 で足ります
 （[コンテキストのサイズ設定](docs/server-api.md#sizing-the-context-for-a-client)）。
 
+<details>
+<summary>opencode、Claude Code、Codex CLI の設定</summary>
+
 ```jsonc
 // opencode, ~/.config/opencode/opencode.json
 {
@@ -166,6 +173,8 @@ base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
+
+</details>
 
 **Connect apps** では、アプリが opencode と Codex CLI 向けの設定を書き込み、Claude Code 向けの設定を表示します。
 
@@ -205,31 +214,63 @@ Apple silicon の Mac では GPU が CPU と同じ RAM を使うため、階層�
   <img src="docs/assets/diagrams/plan-ja.png" width="820" alt="プランナー：マシンとモデルからプランを作り、各重みの置き場所（VRAM、RAM、フラッシュ）、プロンプトを処理するデバイスとトークンを生成するデバイス、キャッシュサイズとスレッド数を決めます。最初の回答を計測し、速い方を次回の読み込みのために保存します。">
 </p>
 
-## プラットフォーム
+## パフォーマンス
 
-| | Android | macOS | Windows | Linux | iOS |
-|---|---|---|---|---|---|
-| エンジンと CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（アプリ内） |
-| アプリ | ネイティブアプリ | デスクトップアプリ | デスクトップアプリ | デスクトップアプリ | ネイティブアプリ（ソースからビルド） |
-| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA, OpenCL (arm64), Hexagon NPU (arm64) | Vulkan, CUDA, HIP | Metal |
-| テスト環境 | 12 GB スマートフォン | 16 GB ノート PC | 16 GB ノート PC | レンタルした 12-24 GB の NVIDIA カードと 192 GB の AMD カード | 12 GB iPhone |
+デコード速度（トークン/秒）、`--auto`、ストリーム 1 本。範囲は複数回の実行でのばらつきです。
 
-詳細：[docs/platforms.md](docs/platforms.md)。
+**0.50 での計測**（[bench-data](docs/bench-data/2026-11-25-release-0.50/README.md)）：
 
-## 他のエンジンとの比較
+| ハードウェア | メモリ | モデル | ディスク上のサイズ | エキスパートの読み出し元 | デコード tok/s |
+|---|---|---|---:|---|---:|
+| **デスクトップ GPU**（NVIDIA） | 24 GB + 23 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 156 |
+|  |  | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 16-19 |
+|  |  | Inkling 2 Mini | 17 GB | GPU | 61 |
+| **デスクトップ GPU**（NVIDIA） | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 99-102 |
+|  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 45-51 |
 
-| | **BigMoeOnEdge** | Strata | ds4 | colibri | KTransformers |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Android スマートフォン（NPU も） | ✅ | ❌ | ❌ | ❌ | ❌ |
-| iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux（CPU のみ） | ✅ | ❌ | Linux（デバッグ用） | ✅ | ❌ |
-| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AMD（ROCm） | ✅（MI300X も） | Radeon RX と Strix Halo | Strix Halo と RDNA | Vulkan | ✅ |
-| GGUF の任意の MoE モデル | ✅ | 少数のモデル | 少数のモデル | 独自形式 | 少数のモデル |
-| 自動設定 | ✅ `--auto` | メモリに応じてモデルを選択 | エキスパートキャッシュの予算 | `coli tune` | ❌ |
+**今後のリリース予定**：まだリリースされていないオープンなプルリクエストでの計測です。ドラフトのため数値は変わる可能性があり、現在のインストールではこの速度は出ません。
 
-速度と出典：[docs/comparison.md](docs/comparison.md)。
+| ハードウェア | モデル | 適用前 | PR 適用時 | PR |
+|---|---|---:|---:|---|
+| Apple シリコンのノート PC、16 GB | Qwen3.8-Flash-Next 125B | 7-9 | 14 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple シリコンのノート PC、16 GB | Qwen3.6-35B-A3B | 18-24 | 28-29 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| デスクトップ GPU（NVIDIA）、12 GB | Qwen3.6-35B-A3B | 52 | 59 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple シリコンのノート PC、16 GB | Qwen3.6-35B-A3B、コード、ドラフトモデル併用 | 24 | 38 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749), [#755](https://github.com/Helldez/BigMoeOnEdge/pull/755) |
+| Apple シリコンのノート PC、16 GB | Qwen3.6-35B-A3B、3k トークンのプロンプト読み込み | 215 | 367 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749) |
+
+**以前のリリース**（リリーステストで再計測されるまで掲載）：
+
+| ハードウェア | メモリ | モデル | ディスク上のサイズ | エキスパートの読み出し元 | デコード tok/s |
+|---|---|---|---:|---|---:|
+| **Android スマートフォン** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | フラッシュ | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | フラッシュ | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 6 |
+| **Apple silicon ノート PC** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | フラッシュ | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 18-24 |
+| **Windows ノート PC** | 16 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
+| **デスクトップ GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM、GPU キャッシュ | 16-17 |
+| **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
+| **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **デスクトップ GPU**（NVIDIA） | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
+|  | うち 12 GB が空き | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **デスクトップ GPU**（NVIDIA） | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 37-44 |
+| **デスクトップ GPU ×2**（NVIDIA） | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | フラッシュ、GPU キャッシュ | 5 |
+| **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+**他のエンジンとの比較（同じマシン、同じファイル）。** Qwen3.6-35B-A3B ではこのエンジンが上回ります：12 GB のカードで
+Strata の 41 に対して 55 tok/s（0.45）、24 GB のカードで Lucebox の 123 に対して 154（0.41）。Qwen3.8-Flash-Next では
+Strata が 2〜3 倍速く、12 GB のカードでこのエンジンの 23 に対して 45、8 GB のカードで 16 に対して 49 です（0.45）。すべての実行結果：
+[docs/comparison.md](docs/comparison.md#same-machine-same-file)。
+
+計測方法とすべての実行結果：[docs/benchmarks.md](docs/benchmarks.md)。自分のマシンを追加するには、
+`scripts/bench-report.sh model.gguf` を実行して
+[ベンチマークレポート](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)を作成してください。
 
 ## ソースからのビルド
 

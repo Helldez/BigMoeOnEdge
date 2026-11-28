@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Documentation
+- **The README is reorganised, in every language.** What runs where (Platforms) and how the engine
+  compares with the others come after what it does. The speed table moves near the end, because it
+  changes with every release: the rows the release tests measured on 0.50 come first, and the earlier
+  releases' rows stay below them until a release test measures them again. The comparison adds
+  llama.cpp and Lucebox and a row for where each engine keeps the experts that do not fit in RAM. A
+  paragraph sums up the same-machine runs against Strata and Lucebox: ahead on Qwen3.6-35B-A3B, two to
+  three times behind on Qwen3.8-Flash-Next. The iOS install line links the TestFlight beta a
+  contributor builds from release tags (#235). The coding-agent settings fold into one block, and the
+  Trendshift badge is back. The translations also catch up with the
+  paragraphs they lacked: running the server as a service, and the Termux build.
+- **The 0.50.0 release tests are published**
+  ([bench-data](docs/bench-data/2026-11-25-release-0.50/README.md)): 0.47.2 against 0.50.0 on a rented
+  12 GB and a 24 GB card, with no regression. Qwen3.6-35B-A3B decodes at 99-102 tok/s with a GPU cache
+  on the 12 GB card and at 156 with the whole model on the 24 GB one; Qwen3.8-Flash-Next at 45-51 from
+  RAM on the 12 GB card, and at 16-19 streamed from the drive on the 24 GB card with 23 GB of RAM;
+  Inkling 2 Mini at 61 with the whole model on the 24 GB card. A "Coming" block lists what open draft pull requests
+  measure (#741, #749, #755), marked as not released.
+- **[comparison.md](docs/comparison.md) is checked again (2026-11-28).** Strata no longer runs
+  DeepSeek V4.1 Flash, spreads three models to the SSD and loads a `.gguf` of your own. Lucebox
+  streams DeepSeek V4.1 Flash from the SSD and picks a launch profile from the GPUs it finds. colibri
+  reads GGUF through `coli import` and measures the machine in `coli setup`. There is a new
+  Qwen3.6-35B-A3B speed table, and a note on Basalt. [platforms.md](docs/platforms.md) and
+  [examples/ios](examples/ios/README.md) are updated for 0.50.1 and the TestFlight beta.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

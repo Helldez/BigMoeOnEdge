@@ -6,6 +6,10 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Helldez/BigMoeOnEdge/releases/latest"><img src="https://img.shields.io/github/v/release/Helldez/BigMoeOnEdge" alt="最新版本"></a>
   <a href="https://github.com/Helldez/BigMoeOnEdge/actions/workflows/ci.yml"><img src="https://github.com/Helldez/BigMoeOnEdge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Helldez/BigMoeOnEdge" alt="许可证"></a>
@@ -14,10 +18,9 @@
 
 > 本文为译文；以英文 README 为准，英文版可能更新。
 
-运行比设备内存更大的混合专家（Mixture-of-Experts）模型。模型需要专家时，从闪存读取。
-支持 Android、iOS、macOS、Windows 和 Linux，基于 llama.cpp 构建。
-统一的流式加载框架：从手机、笔记本到消费级和数据中心 GPU，支持任何硬件、任何操作系统、任何模型、任何量化。
-自动资源调度，为优化 tok/s 量身定制。
+运行比设备内存更大的混合专家（Mixture-of-Experts）模型。引擎将每个 token 都需要的权重和最常用的专家保留在内存中，
+其余部分在模型需要时从闪存读取。一个引擎覆盖手机、笔记本、桌面和数据中心 GPU，支持 Android、iOS、macOS、Windows
+和 Linux：它测量机器和模型，自行完成配置。基于 llama.cpp 构建。
 
 <table align="center">
 <tr>
@@ -36,7 +39,7 @@
 </tr>
 </table>
 
-Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型、任何量化都可以运行。解码速度取自[性能](#性能)表。
+Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型、任何量化都可以运行。各机器和各版本的速度：[性能](#性能)。
 
 **2021 年的笔记本，没有 GPU 的智能体**：把流行的体素宝塔提示词交给内置智能体，运行在 16 GB 内存、仅用 CPU 的 ThinkPad 上，模型为 Qwen3.6-35B-A3B Q4_K_M。以 2.3 tok/s 写出 988 行，然后在应用的预览中打开页面；加速的部分已在画面上标出。
 
@@ -48,38 +51,38 @@ Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型�
 - **自动配置。** `--auto` 测量机器和模型，选择缓存大小、线程数以及由哪个设备做什么。Plan 界面展示每项选择及其原因。
 - **任意 MoE GGUF。** llama.cpp 能加载的都可以，任意量化格式。没有针对单个模型的代码。
 - **所有后端。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL 和 Hexagon NPU。在显卡上，最常用的专家保留在 VRAM 中。
-- **应用与服务器。** 桌面应用、手机应用，以及面向编程智能体的 OpenAI 和 Anthropic 兼容服务器。
+- **应用与服务器。** 桌面应用、手机应用，面向编程智能体的 OpenAI 和 Anthropic 兼容服务器，以及桌面应用中自带的智能体。
 - **识别图像。** 把模型的投影器文件（`mmproj`）放在模型旁边，服务器在每个 API 上都能读取图像；CLI 使用 `--mmproj` 和 `--image`。llama.cpp 投影器库支持的任意视觉模型，任意量化格式，所有后端。
 
-## 性能
+## 平台
 
-| 硬件 | 内存 | 模型 | 磁盘占用 | 专家读取自 | 解码 tok/s |
-|---|---|---|---:|---|---:|
-| **Android 手机** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | 闪存 | 1 |
-|  |  | Qwen3.8-Flash-Next 125B | 80 GB | 闪存 | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5-6 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 6 |
-| **Apple silicon 笔记本** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | 闪存 | 7-9 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 18-24 |
-| **Windows 笔记本** | 16 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
-| **桌面 GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM，GPU 缓存 | 16-17 |
-| **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
-| **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **桌面 GPU**（NVIDIA） | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
-|  | 其中 12 GB 空闲 | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 59-67 |
-|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
-|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **桌面 GPU**（NVIDIA） | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 16 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 37-44 |
-| **两块桌面 GPU**（NVIDIA） | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 41-48 |
-|  |  | DeepSeek V4 Flash 284B | 91 GB | 闪存，GPU 缓存 | 5 |
-| **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+| | Android | iOS | macOS | Windows | Linux |
+|---|---|---|---|---|---|
+| 引擎与 CLI | arm64 | arm64（内置于应用中） | Apple silicon | x86_64, arm64 | x86_64, aarch64 |
+| 应用 | 原生应用（APK） | 原生应用，TestFlight 测试版 | 桌面应用（`.dmg`） | 桌面应用（安装程序） | 桌面应用（AppImage） |
+| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Metal | CUDA, Vulkan；arm64 上还有 OpenCL 和 Hexagon NPU | CUDA, HIP (AMD ROCm), Vulkan |
+| 运行设备 | 一台 12 GB 手机 | 12 GB iPhone | 一台 16 GB 笔记本 | 一台 16 GB 笔记本；用户反馈中的 NVIDIA 笔记本和台式机 | 租用的 8 到 96 GB NVIDIA 显卡，一块 192 GB AMD 显卡（ROCm） |
 
-范围表示多次运行之间的差异。方法与每次运行：
-[docs/benchmarks.md](docs/benchmarks.md)。如需添加你的机器，请运行
-`scripts/bench-report.sh model.gguf` 并提交一份
-[基准测试报告](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)。
+各平台已实测、已发布和仍待完成的内容：[docs/platforms.md](docs/platforms.md)。
+
+## 与其他引擎的比较
+
+| | **BigMoeOnEdge** | llama.cpp | Strata | Lucebox | ds4 | colibri | KTransformers |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Android 手机（含 NPU） | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| iPhone | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Mac | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| 仅 CPU | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AMD | ✅ ROCm，含 MI300X | ✅ | Radeon RX、Strix Halo | R9700、Ryzen AI MAX+ | Strix Halo | Vulkan | ✅ |
+| 模型 | 任意 MoE GGUF | 任意 GGUF | 一份列表；自 0.2.23 起可用自己的文件 | 一份列表 | 自有 GGUF | 自有格式；GGUF 需导入 | 列出的模型系列 |
+| 超出 RAM 的专家 | 从闪存流式读取 | 操作系统页缓存 | 由其规划器分散到 SSD | 从 SSD 流式读取（DeepSeek V4.1） | 从 SSD 流式读取 | 从磁盘流式读取 | 保存在 RAM 中 |
+| 自动配置 | ✅ `--auto`，基于测量 | `--fit` | 按内存选择模型 | 每组 GPU 一个配置文件 | 专家缓存预算 | `coli setup`、`coli tune` | ❌ |
+
+各引擎可运行的平台及其各自报告的速度，核对于 2026-11-28：
+[docs/comparison.md](docs/comparison.md)。在同一台机器上与它们的对比：
+[性能](#性能)。
 
 ## 安装
 
@@ -91,7 +94,8 @@ Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型�
 - **Linux**：为 `.AppImage` 添加可执行权限后运行。窗口需要 WebKitGTK 4.1；
   `--server` 只运行服务器。
 - **Android**：安装 `app-dev-release.apk`。每个版本都会覆盖安装在上一个版本之上。
-- **iOS**：使用 Xcode 从 [examples/ios](examples/ios/README.md) 构建。实验性功能。
+- **iOS**：加入 [TestFlight 测试版](https://testflight.apple.com/join/fKks3qjJ)（由一位贡献者从发布标签构建），
+  或使用 Xcode 从 [examples/ios](examples/ios/README.md) 构建。实验性功能。
 
 打开应用，在 **Models** 中选择一个模型。NVIDIA 或 AMD 显卡可从 **Settings** 获取其后端
 （[docs/desktop-app.md](docs/desktop-app.md)）。
@@ -118,6 +122,14 @@ bmoe-server -m model.gguf -c 32768                         # the server and its 
 包括流式输出、工具调用和推理。添加 `--host 0.0.0.0 --api-key KEY` 即可为其他机器提供服务。
 参考：[docs/server-api.md](docs/server-api.md)。
 
+在一台常开的机器上，可以改为把它注册为当前登录用户的服务：它随机器启动，恢复时带着它的模型，
+并在请求发现没有已加载的模型时重新加载（[作为服务运行](docs/server-api.md#running-as-a-service)）。
+
+```bash
+bmoe-server service install --host 0.0.0.0 -m model.gguf -c 65536   # systemd, launchd or Task Scheduler
+bmoe-server service status
+```
+
 ```python
 from openai import OpenAI
 
@@ -128,6 +140,9 @@ print(reply.choices[0].message.content)
 
 **编程智能体**需要较大的上下文：约为其首个请求的几倍。opencode 用 32768 足够，Claude Code 用 65536
 （[为客户端设定上下文大小](docs/server-api.md#sizing-the-context-for-a-client)）。
+
+<details>
+<summary>opencode、Claude Code 和 Codex CLI 设置</summary>
 
 ```jsonc
 // opencode, ~/.config/opencode/opencode.json
@@ -166,6 +181,8 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
+</details>
+
 在 **Connect apps** 中，应用会写入 opencode 和 Codex CLI 的设置，并显示 Claude Code 所需的设置。
 
 **智能体。** 桌面应用有自己的智能体：它在你选择的文件夹中工作，读取和编辑文件、运行命令；除非你允许，否则在做任何更改前都会先询问。
@@ -201,31 +218,62 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
   <img src="docs/assets/diagrams/plan-zh.png" width="820" alt="规划器：机器和模型输入方案；方案决定每个权重放在哪里（VRAM、RAM 或闪存）、哪个设备处理提示词、哪个生成 token，以及缓存大小和线程数；测量第一个回答，更快的设置保存供下次加载使用。">
 </p>
 
-## 平台
+## 性能
 
-| | Android | macOS | Windows | Linux | iOS |
-|---|---|---|---|---|---|
-| 引擎与 CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（内置于应用中） |
-| 应用 | 原生应用 | 桌面应用 | 桌面应用 | 桌面应用 | 原生应用，从源码构建 |
-| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA, OpenCL (arm64), Hexagon NPU (arm64) | Vulkan, CUDA, HIP | Metal |
-| 测试设备 | 12 GB 手机 | 16 GB 笔记本 | 16 GB 笔记本 | 租用的 12-24 GB NVIDIA 显卡和 192 GB AMD 显卡 | 12 GB iPhone |
+解码速度，单位为每秒 token 数，`--auto`，单个流。范围表示多次运行之间的差异。
 
-详细信息：[docs/platforms.md](docs/platforms.md)。
+**在 0.50 上实测**（[bench-data](docs/bench-data/2026-11-25-release-0.50/README.md)）：
 
-## 与其他引擎的比较
+| 硬件 | 内存 | 模型 | 磁盘占用 | 专家读取自 | 解码 tok/s |
+|---|---|---|---:|---|---:|
+| **桌面 GPU**（NVIDIA） | 24 GB + 23 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 156 |
+|  |  | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 16-19 |
+|  |  | Inkling 2 Mini | 17 GB | GPU | 61 |
+| **桌面 GPU**（NVIDIA） | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 99-102 |
+|  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 45-51 |
 
-| | **BigMoeOnEdge** | Strata | ds4 | colibri | KTransformers |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Android 手机（含 NPU） | ✅ | ❌ | ❌ | ❌ | ❌ |
-| iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux（仅 CPU） | ✅ | ❌ | Linux，用于调试 | ✅ | ❌ |
-| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
-| AMD（ROCm） | ✅（含 MI300X） | Radeon RX 和 Strix Halo | Strix Halo 和 RDNA | Vulkan | ✅ |
-| 任意 GGUF 格式的 MoE 模型 | ✅ | 少数模型 | 少数模型 | 自有格式 | 少数模型 |
-| 自动配置 | ✅ `--auto` | 按内存选择模型 | 专家缓存预算 | `coli tune` | ❌ |
+**即将推出**：来自尚未发布的开放 pull request。它们是草稿：数字可能变化，目前安装的版本还达不到。
 
-速度及出处：[docs/comparison.md](docs/comparison.md)。
+| 硬件 | 模型 | 之前 | 使用该 PR | PR |
+|---|---|---:|---:|---|
+| Apple 芯片笔记本，16 GB | Qwen3.8-Flash-Next 125B | 7-9 | 14 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple 芯片笔记本，16 GB | Qwen3.6-35B-A3B | 18-24 | 28-29 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| 桌面 GPU（NVIDIA），12 GB | Qwen3.6-35B-A3B | 52 | 59 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple 芯片笔记本，16 GB | Qwen3.6-35B-A3B，代码，配合草稿模型 | 24 | 38 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749), [#755](https://github.com/Helldez/BigMoeOnEdge/pull/755) |
+| Apple 芯片笔记本，16 GB | Qwen3.6-35B-A3B，读取 3k token 的提示 | 215 | 367 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749) |
+
+**早期版本**，保留到发布测试重新测量为止：
+
+| 硬件 | 内存 | 模型 | 磁盘占用 | 专家读取自 | 解码 tok/s |
+|---|---|---|---:|---|---:|
+| **Android 手机** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | 闪存 | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | 闪存 | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 6 |
+| **Apple silicon 笔记本** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | 闪存 | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 18-24 |
+| **Windows 笔记本** | 16 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
+| **桌面 GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM，GPU 缓存 | 16-17 |
+| **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
+| **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **桌面 GPU**（NVIDIA） | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
+|  | 其中 12 GB 空闲 | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **桌面 GPU**（NVIDIA） | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 37-44 |
+| **两块桌面 GPU**（NVIDIA） | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | 闪存，GPU 缓存 | 5 |
+| **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+**与其他引擎对比，同一台机器、同一个文件。** 在 Qwen3.6-35B-A3B 上本引擎领先：12 GB 显卡上 55 tok/s
+对 Strata 的 41（0.45），24 GB 显卡上 154 对 Lucebox 的 123（0.41）。在 Qwen3.8-Flash-Next 上 Strata 快两到三倍：
+12 GB 显卡上 23 对 45，8 GB 显卡上 16 对 49（0.45）。每次运行：[docs/comparison.md](docs/comparison.md#same-machine-same-file)。
+
+方法与每次运行：[docs/benchmarks.md](docs/benchmarks.md)。如需添加你的机器，请运行
+`scripts/bench-report.sh model.gguf` 并提交一份
+[基准测试报告](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)。
 
 ## 从源码构建
 
@@ -239,8 +287,9 @@ build/bin/bmoe-server --open
 
 llama.cpp 后端只需原样传入一个 CMake 选项：`scripts/build-host.sh -DGGML_VULKAN=ON`
 （或 `-DGGML_CUDA=ON`）。测试：`cd build && ctest --output-on-failure`（需要安装了 `gguf` 的 `python3`）。Android：
-`scripts/build-android.ps1`，然后在 [examples/android](examples/android) 中构建 APK。更多：
-[CONTRIBUTING.md](CONTRIBUTING.md)。
+`scripts/build-android.ps1`，然后在 [examples/android](examples/android) 中构建 APK。在手机上的 Termux 中：
+`pkg install git cmake clang make nodejs-lts`，然后按上述步骤执行，改用 `scripts/build-host.sh -DBMOE_BACKEND_MODULES=OFF`：
+为该手机的核心构建一个 CPU 库，而不是每个指令集层级一个模块。更多：[CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 文档
 
