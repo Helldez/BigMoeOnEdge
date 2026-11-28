@@ -549,7 +549,11 @@ experts would use (`width_narrow` and its rates,
 on a machine whose device reads that same memory, on the cores or every layer on the device
 (`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
 `no_shared_device_prompt_tps` the load that compared the answers timed,
-[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), and
+where a device expert cache's misses upload from: a copy of the experts in the device's own host memory
+or the file's mapping (`staging_tps`, `no_staging_tps`). On a rented card shared with other tenants, the
+probe that compares the two upload paths named one on a load and the other on the next, for 66 against
+44 tok/s; once both sides are timed, the rates decide.
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one

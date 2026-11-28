@@ -724,6 +724,11 @@ struct KnobTrialConfig {
     // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
     // model is fixed when it is loaded, so a side is timed by a load that serves it.
     int shared_device_side = -1;
+    // Whether the device expert cache's misses upload from a copy of the experts in the device's own
+    // host memory (MoeStreamConfig::expert_host_buffer), decided across loads
+    // (MeasuredKnobs::staging_tps): 1 times the decode with the copy, 0 without it; -1 neither. The
+    // copy is made at load, so a side is timed by a load that serves it.
+    int staging_side = -1;
     // The device whose answers for this model the load compares with the cores' before it serves
     // (ggml's name for it, the key the verdict is kept under: MeasuredKnobs::device_answers); empty,
     // nothing is compared. A plan that moves a whole model onto a device by its own choice asks for
@@ -751,7 +756,8 @@ struct KnobTrialConfig {
     bool test_answer_differs = false;
 
     bool enabled() const {
-        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || shared_device_side >= 0;
+        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || shared_device_side >= 0 ||
+               staging_side >= 0;
     }
 
     static constexpr int threads_max_candidates = 2;
@@ -961,6 +967,8 @@ template <class Config> Config held_on_cores(Config cfg) {
     cfg.trial.answer_device.clear();
     cfg.trial.answer_prompt_per_token = -1.0f; // the check's weighing, with no device left to compare
     if (cfg.trial.shared_device_side == 1) cfg.trial.shared_device_side = 0;
+    cfg.moe.expert_host_buffer.clear(); // no device cache left to upload misses into
+    cfg.trial.staging_side = -1;
     return cfg;
 }
 

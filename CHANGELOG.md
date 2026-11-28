@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.50.2] - 2026-11-28
+
+### Fixed
+- **The experts' copy into a card's own host memory no longer flips from load to load.** With a device
+  expert cache, `--auto` chose whether the cache's misses upload from a copy of the experts in the card's
+  own host memory or from the file's mapping on one probe of each path. On a rented card shared with other
+  tenants that probe named the copy on one load and the mapping on the next. Without the copy, Flash-Next
+  decoded at 44 tok/s against 66 and prefilled a 4k prompt 30% slower. Now:
+  - the probe takes three rounds of each path in turns and keeps each one's median;
+  - the copy is the first side unless the mapping uploads faster by the margin;
+  - the loads time both sides (`MeasuredKnobs::staging_tps`, `no_staging_tps`, `--trial-expert-host-buffer`,
+    one side a load, after any other side being timed), and once both are timed the faster one serves,
+    whatever a probe reads.
+  On a card whose probe was stable the first side is the one it already chose.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed
