@@ -1476,6 +1476,7 @@ bool Session::Impl::create_contexts(Opening & o) {
         cparams.moe_cache_cpu_threads = cfg.moe.device_cache_cpu_threads;
         cparams.moe_cache_async_admit = cfg.moe.device_cache_async_admit;
         cparams.moe_cache_read_ahead = cfg.moe.device_cache_read_ahead;
+        cparams.moe_cache_lend = cfg.moe.device_cache_lend;
     }
 
     // llama.cpp is asked, and where it refuses, asked again with one thing changed at a time

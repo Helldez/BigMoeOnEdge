@@ -4517,9 +4517,31 @@ Plan shared_device_cache(Plan p,
     c.moe.overlap = c.moe.io_two_wave = false;
     c.trial.overlap = false;
     c.moe.device_cache_mb = (int) mib(cache_bytes);
-    c.moe.device_cache_fill_lanes = (int) lanes;
-    c.moe.device_cache_read_ahead = (int) m.n_expert_used;   // the router's own top-k, one layer ahead
-    if (mk.device_cache_tps <= 0.0) c.trial.device_tier = 1; // served, and timed as it serves
+    // A prompt's wide passes borrow the cache's memory while they run (the cache empties before each and refills from
+    // the misses after), so a pass as wide as the cache and the small batches' buffers hold together costs the answer
+    // nothing; and on this side every pass re-reads each expert the cache does not hold, so a pass fewer is that read
+    // fewer. Measured on a 16 GB laptop, Qwen3.6-35B, 2959-token prompt: 215 tok/s in 1024-token passes, 390 in one
+    // pass, the decode's cache unchanged.
+    uint32_t lent_width = 0;
+    if (!req.is_pinned("device-cache-lend")) c.moe.device_cache_lend = true;
+    if (c.moe.device_cache_lend && !req.is_pinned("ubatch") && projected.compute_width > 0) {
+        auto buffers = [&](uint32_t w) {
+            const Placement at = projected.at_width(w);
+            return at.raw_host_compute_bytes + at.device_compute_bytes; // one pool: the device reads host memory
+        };
+        const uint32_t now = (uint32_t) p.config.graph_width();
+        const uint64_t room = buffers(now) + cache_bytes;
+        const uint32_t w = narrowed_width(projected.compute_width, now, [&](uint32_t x) { return buffers(x) > room; });
+        if (w > now) {
+            c.n_ubatch = (int) w;
+            lent_width = w;
+        }
+    }
+    // a lane count or read-ahead the caller typed is a pin this rule keeps
+    if (!req.is_pinned("device-cache-fill-lanes")) c.moe.device_cache_fill_lanes = (int) lanes;
+    if (!req.is_pinned("device-cache-read-ahead"))
+        c.moe.device_cache_read_ahead = (int) m.n_expert_used; // the router's own top-k, one layer ahead
+    if (mk.device_cache_tps <= 0.0) c.trial.device_tier = 1;   // served, and timed as it serves
     // The device computes this model whole now: its answers are compared with the cores' before it serves,
     // as for a model held whole there (KnobTrialConfig::answer_device), and where they differ the session
     // reopens as the stream. A device the record already confirmed for this model is not asked again.
@@ -4537,6 +4559,9 @@ Plan shared_device_cache(Plan p,
                " experts per token read ahead; where the device cannot open the model the session reopens as "
                "the stream" +
                (mk.device_cache_tps > 0.0 ? "" : "; this load times its own decode as it serves") +
+               (lent_width > 0 ? "; a prompt borrows the cache's memory for passes " + u64s(lent_width) +
+                                     " tokens wide, re-reading the experts it misses once per pass"
+                               : std::string()) +
                (confirmed ? "; its answers for this model matched the cores' on this machine"
                           : "; the load compares its answers for this model with the cores' before it serves, and "
                             "reopens as the stream where they differ");

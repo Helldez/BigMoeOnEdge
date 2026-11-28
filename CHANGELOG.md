@@ -28,6 +28,21 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   cache serves now predicts each token's experts and fills their union, best rank first. On a 16 GB laptop
   with Qwen3.6-35B the small-batch hit rate went from 92.3 to 94.0% (draft 1) and from 91.3 to 93.7%
   (draft 3), the time spent filling misses fell by a fifth to a quarter, and the text is identical.
+- **A long prompt in one pass on a device that shares memory, the decode's cache untouched.** Where the device
+  cache serves a streamed model, every pass of a prompt re-reads each expert the cache does not hold, yet the
+  passes were held to 1024 tokens to keep the compute buffers small. `--auto` now lends the cache to the prompt
+  (`--device-cache-lend`, experimental): its slots live in the compute buffer past what the answer uses, a wide
+  pass takes that memory and the cache refills after, and the pass is as wide as that memory allows. On a 16 GB
+  laptop with Qwen3.6-35B a 2959-token prompt prefilled at 367 tok/s instead of 215 (first token 15.8 s instead
+  of 21.4), the decode unchanged and the text identical
+  ([hardware-planning.md](docs/hardware-planning.md#a-streamed-model-on-a-device-that-shares-memory)).
+- **Fixed: the device cache's read-ahead on two kinds of model.** A model whose experts read a latent input
+  narrower than the router's aborted when read-ahead was on, and a model whose layers run the same experts
+  (looped blocks) changed its answer; the gates had no case with read-ahead. Read-ahead now skips both, fills
+  ahead only where the cache is filled in place (its upload queue for other devices is gone: it measured slower
+  over PCIe and changed a looped model's answer), and two gates cover it (G25f with speculation, G25g with the
+  cache lent to a wide prompt). `--device-cache-fill-lanes` and `--device-cache-read-ahead` typed by hand are no
+  longer overwritten by `--auto`.
 - **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
   `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
   ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.

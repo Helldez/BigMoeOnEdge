@@ -184,6 +184,12 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("{device-cache-cpu-share} is a share of the device cache's misses: from 0 to 1");
     if (cfg.moe.device_cache_cpu_share > 0.0f && cfg.moe.device_cache_mb <= 0)
         return fail("{device-cache-cpu-share} splits the misses of a device expert cache: it needs {device-cache-mb}");
+    if (cfg.moe.device_cache_lend && cfg.moe.device_cache_async_admit)
+        return fail("{device-cache-lend} lends the cache's memory to a prompt, which writes over the zero slots "
+                    "{device-cache-async-admit} needs: set one of them");
+    if (cfg.moe.device_cache_lend && cfg.moe.device_cache_cpu_share > 0.0f)
+        return fail("{device-cache-lend} lends the cache's memory to a prompt, which writes over the zero slots "
+                    "{device-cache-cpu-share} needs: set one of them");
     // The host half reads the experts' host copy as the layer runs; over streamed experts that copy is
     // the streamer's slots, and no gate covers the pair yet (tests/moe_gates.cpp, G25d is resident).
     if (cfg.moe.device_cache_cpu_share > 0.0f && cfg.moe.enabled)

@@ -2087,6 +2087,41 @@ int main(int argc, char ** argv) {
                         fails += check("G25c device cache, streamed, n-gram speculation == resident experts", s_placed,
                                        s_cached_spec);
                     }
+                    // f) the next layer's experts read ahead, for the verify batches of a draft too: a read-ahead
+                    // only fills slots earlier, so the answer stays the resident placement's.
+                    RunConfig cached_ra = cached_spec;
+                    cached_ra.moe.device_cache_read_ahead = 2;
+                    std::string s_cached_ra;
+                    if (!gen(cached_ra, s_cached_ra, err)) {
+                        std::printf("[FAIL] G25f a device cache run with read-ahead failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        fails += check("G25f device cache, read-ahead, n-gram speculation == resident experts",
+                                       s_placed, s_cached_ra);
+                    }
+                    // g) the cache lent to a prompt's wide passes: a prompt wider than the small batches the cache
+                    // serves empties it before its pass and the decode refills it. Against the resident placement
+                    // with the same prompt in passes as wide.
+                    {
+                        std::string wide_prompt;
+                        for (int i = 0; i < 2; ++i)
+                            wide_prompt += "the streamed experts fill the slots again ";
+                        RunConfig ref_w = placed;
+                        ref_w.prompt = wide_prompt;
+                        ref_w.n_ubatch = 128;
+                        RunConfig lent = cached_s;
+                        lent.prompt = wide_prompt;
+                        lent.n_ubatch = 128;
+                        lent.moe.device_cache_lend = true;
+                        std::string s_ref_w, s_lent;
+                        if (!gen(ref_w, s_ref_w, err) || !gen(lent, s_lent, err)) {
+                            std::printf("[FAIL] G25g a run with the cache lent failed: %s\n", err.c_str());
+                            ++fails;
+                        } else {
+                            fails +=
+                                check("G25g device cache lent to a wide prompt == resident experts", s_ref_w, s_lent);
+                        }
+                    }
                     // e) each side of the device tier timed for a decision across loads
                     // (KnobTrialConfig::device_tier): the rate probe switches nothing, so each answer is
                     // its placement's, and the record must carry the rate, or a plan has nothing to

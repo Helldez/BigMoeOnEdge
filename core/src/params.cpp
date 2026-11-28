@@ -603,10 +603,26 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("device-cache-read-ahead", "Device cache read-ahead", G::Cache, L::Experimental,
-                          "With a device expert cache, the experts per token of the next layer, "
-                          "named by its router on this layer's input, that are brought into the cache while this "
-                          "layer computes, for every batch the cache serves (a draft's verify batch too). 0 is off.");
+        ParamDesc d =
+            row("device-cache-lend", "Device cache lent to prompts", G::Cache, L::Experimental,
+                "Keep the device expert cache in the compute buffer, past what the answer's "
+                "passes use, and lend it to a prompt's wide passes: the cache empties before each and refills "
+                "after. Needs a device cache and no misses on the CPU.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--device-cache-lend", "true"}, {"--no-device-cache-lend", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_lend; });
+        d.details = "Experimental: the graphics card's expert cache and the room a long prompt needs share one "
+                    "piece of memory.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d =
+            row("device-cache-read-ahead", "Device cache read-ahead", G::Cache, L::Experimental,
+                "With a device expert cache, the experts per token of the next layer, "
+                "named by its router on this layer's input, that are brought into the cache while this "
+                "layer computes, for every batch the cache serves (a draft's verify batch too), where the host "
+                "writes the cache in place. 0 is off.");
         d.value_hint = "N";
         bounds(d, 0, MoeStreamConfig::device_cache_read_ahead_max, "experts");
         special(d, "0", "off");

@@ -136,6 +136,11 @@ struct MoeStreamConfig {
     // - read-ahead: the next layer's router, applied to this layer's input, names this many experts
     //   per token that are filled while this layer computes. 0 is off.
     int device_cache_read_ahead = 0;
+    // EXPERIMENTAL: the device cache lives in the compute buffer past what small batches use, and a prompt's
+    // wide passes take that memory while they run; the cache empties before each and refills from the
+    // misses after (llama_context_params::moe_cache_lend). One reservation serves the prompt and the
+    // answer. Needs device_cache_mb and no CPU share.
+    bool device_cache_lend = false;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the

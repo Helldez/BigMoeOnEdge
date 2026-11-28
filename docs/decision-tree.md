@@ -775,7 +775,9 @@ flowchart TD
 - The device wins past the stream by `min_backend_win` once a side is measured, and on two prices alone
   the faster price wins → every layer on it, the experts
   overridden to the host, the stream's cache becomes `device_cache_mb`, `device_cache_fill_lanes` =
-  the storage's best lanes, `device_cache_read_ahead` = the model's top-k, `trial.device_tier = 1`,
+  the storage's best lanes and `device_cache_read_ahead` = the model's top-k (each unless pinned),
+  `device_cache_lend` (unless pinned) with `n_ubatch` widened to the widest graph whose buffers fit in
+  the cache plus the small batches' buffers (unless `ubatch` is pinned), `trial.device_tier = 1`,
   `trial.answer_device` unless confirmed, `fallback` = the streaming plan.
 - Otherwise the stream stays, timed as it serves (`trial.device_tier = 0`).
 

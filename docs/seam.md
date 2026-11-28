@@ -158,11 +158,18 @@ on its own branch so the default pin can return to the hook branch unchanged.
   mapped mailbox inside a captured graph, Metal through a shared event between graph segments).
   The MoE cache's lookup can run as one, so a token is one graph instead of a split per layer.
 - **MoE cache**: `llama_set_moe_cache_fill` (misses written in place by a caller), and
-  `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`,
-  `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the background).
+  `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`
+  (filled ahead only where the host writes the cache in place; predicted for every batch the cache
+  serves), `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the
+  background) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch, where the
+  host writes that memory in place).
+- **Compute buffer room for a lent cache**: `ggml_gallocr_set_min_buffer_size` /
+  `ggml_backend_sched_set_min_buffer_size` (a buffer reserved larger than its graphs need),
+  `ggml_gallocr_get_buffer` / `ggml_backend_sched_get_buffer`, and `ggml_backend_buffer_alias` (a
+  weights-usage view of the compute buffer the banks are bound through).
 
 bmoe drives them through `RunConfig::moe.device_cache_fill_lanes`, `device_cache_host_call`,
-`device_cache_cpu_threads`, `device_cache_read_ahead` and `device_cache_async_admit`, and fills misses from the file with
+`device_cache_cpu_threads`, `device_cache_read_ahead`, `device_cache_async_admit` and `device_cache_lend`, and fills misses from the file with
 `core/src/moe/cache_fill.cpp`. Sunset: dropped with the branch if the levers do not earn a place.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)
