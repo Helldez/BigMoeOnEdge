@@ -82,6 +82,11 @@ struct SessionConfig {
     // RunConfig::fallback; empty, the same configuration on the cores.
     std::shared_ptr<const SessionConfig> fallback;
     bool llama_debug_log = false; // See RunConfig::llama_debug_log.
+    // Optional caller-owned stop flag, as GenerateRequest::stop. A load that sees it raised aborts
+    // the open and fails with "the load was stopped" instead of reading the model through; a
+    // front-end raises it when a person cancels or unloads while a large model is still opening.
+    // Not owned: it must outlive open().
+    const std::atomic<bool> * stop = nullptr;
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a

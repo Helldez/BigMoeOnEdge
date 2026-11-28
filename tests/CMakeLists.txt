@@ -394,6 +394,11 @@ add_executable(bmoe_context_fallback_test context_fallback_test.cpp)
 target_link_libraries(bmoe_context_fallback_test PRIVATE bmoe_core)
 add_test(NAME context_fallback COMMAND bmoe_context_fallback_test)
 
+# Every native placement borrows the same open's cancellation flag; no model or backend needed.
+add_executable(bmoe_opening_stop_test opening_stop_test.cpp)
+target_include_directories(bmoe_opening_stop_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include)
+add_test(NAME opening_stop COMMAND bmoe_opening_stop_test)
+
 # The knob trial's A/B policy (core/src/engine/knob_trial.h) on synthetic decode steps - noise, a real
 # win, a tie inside the margin, drift, an outlier window, the cache settling - and the record its
 # verdict is kept as (bmoe/measured_knobs.h). Pure policy, no model.

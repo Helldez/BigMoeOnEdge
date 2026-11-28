@@ -102,8 +102,16 @@ public:
     // A load in auto mode measures the machine before it loads, for tens of seconds on a phone,
     // with nothing loaded meanwhile: `state` reads "planning" between these two calls, so a UI can
     // say what is happening the moment a person asks for a load.
-    void begin_planning();
-    void end_planning();
+    // One admitted measurement, optionally followed by its load. The flag is monotonic for this
+    // job and stays alive through the loader; a later job cannot clear an earlier job's cancel.
+    // Callers serialize measurement admission, then retain this handle until end_planning().
+    using LoadJob = std::shared_ptr<std::atomic<bool>>;
+    LoadJob begin_planning(); // null if a load or another measurement is still running
+    void end_planning(const LoadJob & job);
+    // Accept a result only while this job is current and not cancelled. `accept` may update
+    // settings/records, but must not start/end a host lifecycle operation. It runs under job_m_,
+    // never m_; cancel/unload and result acceptance are ordered by that same lock.
+    bool accept_plan(const LoadJob & job, const std::function<void()> & accept);
 
     // Open a session with `effective` in the background. `requested` is the config the user asked
     // for, which can differ (a dense model loads with streaming off); it is what reload_required()
@@ -121,7 +129,12 @@ public:
         std::function<void(const std::string & error)> taken;
     };
     // load() with a fallback.
-    std::string load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback);
+    // With `job`, atomically hand that measurement to its loader without resetting cancellation.
+    // Without it, admit a fresh load before announcing Loading.
+    std::string load(const RunConfig & effective,
+                     const RunConfig & requested,
+                     std::optional<OpenFallback> fallback,
+                     LoadJob job = nullptr);
     void unload();
     void cancel();
 
@@ -207,11 +220,14 @@ private:
     void keep_knobs(const HostedSession & s);
 
     // Start the loader thread for `effective`. The caller holds life_m_ and has set the state to Loading.
-    void start_loader(const RunConfig & effective, std::optional<OpenFallback> fallback);
+    void start_loader(const RunConfig & effective, std::optional<OpenFallback> fallback, LoadJob job);
 
-    // Raised by unload() and the host's end: a load under way then opens no fallback, since the
-    // session it would open is not wanted by anyone. Cleared as a load starts.
-    std::atomic<bool> load_cancelled_{false};
+    // Admission, cancellation and result acceptance share this lock; never held across a probe,
+    // an open, or a loader join. Lock order: life_m_ -> job_m_ -> m_. Result callbacks may read the
+    // host (m_), but never load/unload (life_m_). A stop flag belongs to its job, not to a session
+    // or a request's generation, and is borrowed by SessionConfig/AutoPlanOptions only while opening.
+    std::mutex job_m_;
+    LoadJob job_;
 
     std::function<void(const std::string &, const MeasuredKnobs &)> knobs_sink_;
     int knobs_kept_ = 0; // verdicts in the record last handed on; under gen_m_

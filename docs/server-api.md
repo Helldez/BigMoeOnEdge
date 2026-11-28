@@ -363,12 +363,32 @@ something on a stream (overlap, prefetchers, row streaming) is turned off with i
 
 ### `POST /api/session/unload`
 
-Cancels any generation and closes the session. `state` becomes `empty`.
+Cancels any generation, signals the admitted measurement/load, and closes the session. `state`
+becomes `empty`. An in-flight loader is joined after it sees the stop at a cooperative boundary;
+even a session that finishes opening after the signal is discarded. A measurement may still be
+finishing its current stage when unload returns, but its result cannot apply settings, update the
+cached plan, or start a delayed load.
 
 ### `POST /api/cancel`
 
 Stops the running generation at the next decode boundary, or where an image's encoder is when one
 is being encoded. Always `200`.
+
+Since 0.50.2 it also signals the currently admitted model load or measurement (#746). Model weight
+loading reads the flag through llama.cpp's public `progress_callback`; native placement fallbacks
+and a separate MTP head borrow that same flag. Opening checks between its other stages. A stopped
+load ends with `state: empty`, no model and no sticky model error. Planning checks before stages
+and after the rules: cancelling an auto-plan makes the pending `POST /api/session/load` return
+`400` with "the load was stopped", without applying that result or starting its loader. A standalone
+`GET /api/plan` measurement returns `200` with `available`, `cancelled` and `declined` true and
+`decline_reason: "the measurement was stopped"`; it does not replace the cached plan.
+
+Cancellation is cooperative, not a forced interruption: an in-flight probe (including an isolated
+device probe), metadata read, driver call, context creation, warm-up or dense-weight copy can finish
+before the next check. `cancel` signals without joining that work. Cancellation and result
+acceptance are ordered, so settings/records already accepted before the signal are not rolled back.
+Each admitted job keeps its stop state through the plan-to-load handoff; the next job starts with
+a fresh flag. Requests still queued before admission are not the active job that `cancel` targets.
 
 ## Parameters and config
 

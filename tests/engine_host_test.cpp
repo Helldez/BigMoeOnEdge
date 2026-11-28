@@ -16,6 +16,8 @@
 //   * a context short of what a server's clients send is flagged in the ready state and warned of
 //     in the log at load, and a context_full refusal is logged with the way to raise it;
 //   * a load whose config will not open opens its fallback, and is told why only when that opens.
+//   * a load's stop flag survives planning and loader admission: cancelled opens and fallbacks are
+//     dropped without an error or acceptance side effects, and the next job gets a fresh flag.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
@@ -30,12 +32,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -80,6 +84,12 @@ struct Script {
     Gate started;
     Gate before_reset, allow_reset, cancel_called;
     bool hold_before_reset = false;
+    Gate open_started;
+    std::atomic<const std::atomic<bool> *> open_stop{nullptr};
+    std::atomic<bool> open_timed_out{false};
+    Gate before_first_cancel, allow_first_cancel;
+    bool hold_first_cancel = false;
+    std::atomic<bool> first_cancel_timed_out{false};
     std::atomic<int> opened{0};
     std::atomic<int> alive{0};
     std::atomic<int> turns{0};
@@ -209,8 +219,13 @@ public:
     }
     DecideResult decide(const DecideRequest &) override { return s_.decide_result; }
     void cancel() override {
+        // A replacement load calls the old session before starting its loader. Hold only that
+        // first call, outside held_m_, so an external second cancel can finish in the gap.
+        if (++s_.cancels == 1 && s_.hold_first_cancel) {
+            s_.before_first_cancel.release();
+            if (!s_.allow_first_cancel.wait()) s_.first_cancel_timed_out = true;
+        }
         std::lock_guard<std::mutex> lk(s_.held_m);
-        ++s_.cancels;
         cancelled_ = true;
         s_.cancel_called.release();
         s_.held_cv.notify_all();
@@ -248,8 +263,11 @@ private:
 // An opener over `script`. A non-null `hold` keeps the load open until the test releases it; a
 // non-empty `fail` makes the load fail with that reason.
 static SessionOpener opener(Script & script, Gate * hold = nullptr, std::string fail = "") {
-    return [&script, hold, fail](const SessionConfig &, std::string & error) -> std::unique_ptr<HostedSession> {
-        if (hold) hold->wait();
+    return [&script, hold, fail](const SessionConfig & cfg, std::string & error) -> std::unique_ptr<HostedSession> {
+        script.open_stop = cfg.stop;
+        script.open_started.release();
+        // Deliberately ignore cfg.stop: the host must discard even a successful cancelled open.
+        if (hold && !hold->wait()) script.open_timed_out = true;
         ++script.opened;
         script.ran_here();
         if (!fail.empty()) {
@@ -282,6 +300,26 @@ static bool wait_state(const EngineHost & h, const std::string & want, std::chro
         std::this_thread::sleep_for(2ms);
     }
     return state(h) == want;
+}
+
+// A stop flag has no notifier in C++17. Wait for its value, with a deadline only to fail a broken
+// cancellation path; callers keep the opener/lifecycle gate held until this observation is made.
+static bool wait_stopped(const std::atomic<bool> * stop) {
+    if (!stop) return false;
+    const auto end = std::chrono::steady_clock::now() + 5s;
+    while (!stop->load() && std::chrono::steady_clock::now() < end)
+        std::this_thread::yield();
+    return stop->load();
+}
+
+// A failed synchronization must not hang in get() or an async future's destructor. All normal
+// ordering comes from gates/promises; this deadline is only a deadlock watchdog.
+template <class T> static T finish(std::future<T> & pending, const std::string & what) {
+    if (pending.wait_for(5s) != std::future_status::ready) {
+        check(false, what);
+        std::exit(1);
+    }
+    return pending.get();
 }
 
 static ChatRequest turn() {
@@ -353,6 +391,7 @@ static void loading_tests() {
         host.load(config(), config());
         check(wait_state(host, "loading") && host.loaded_or_loading() && !host.ready(), "a held load reads loading");
         check(host.load(config(), config()) == "a model is already loading", "a load while loading is refused");
+        check(!host.begin_planning(), "a measurement while loading is refused");
 
         // The turn takes its place in line and waits out the load, which holds the generation lock.
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
@@ -375,6 +414,215 @@ static void loading_tests() {
         hold.release();
         const ChatOutcome out = pending.get();
         check(out.status == 503 && out.code == error_code::no_model, "and gets the 503 once it has");
+    }
+}
+
+// #746: cancellation belongs to one admitted load, including the gap before its loader starts.
+static void load_cancel_tests() {
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        Gate hold;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script, &hold));
+        EngineHost & host = *host_owner;
+        const EngineHost::LoadJob job = host.begin_planning();
+        check(job && !job->load(), "load cancel: planning admits an unset job flag");
+        check(host.load(config(), config(), std::nullopt, job).empty(), "load cancel: the planned load starts");
+        host.end_planning(job);
+        check(script.open_started.wait() && host.loading(), "load cancel: the opener is held inside the load");
+        const std::atomic<bool> * stop = script.open_stop.load();
+        check(stop && stop == job.get() && !stop->load(),
+              "load cancel: SessionConfig borrows the planning job's unchanged flag");
+        host.cancel();
+        check(stop && stop->load() && job && job->load(), "load cancel: cancel raises the flag while open is held");
+        hold.release();
+        check(wait_state(host, "empty") && !host.ready() && !host.model_coming() && script.opened == 1 &&
+                  script.alive == 0 && !script.open_timed_out,
+              "load cancel: even a successful opener that ignores stop is dropped, not installed");
+        check(host.load_error().empty() && host.info().value("error", "").empty() && host.info()["model"].is_null(),
+              "load cancel: a stopped load leaves no error or model metadata");
+
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"),
+              "load cancel: a genuine next standalone load succeeds");
+        const std::atomic<bool> * next_stop = script.open_stop.load();
+        check(next_stop && next_stop != job.get() && !next_stop->load() && job && job->load() && script.opened == 2 &&
+                  script.alive == 1,
+              "load cancel: the next load has a fresh unset flag without clearing the retired job");
+    }
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        Gate hold;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script, &hold));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty(), "load unload: a standalone load starts");
+        check(script.open_started.wait(), "load unload: the native opener has received its config");
+        const std::atomic<bool> * stop = script.open_stop.load();
+        check(stop && !stop->load(), "load unload: a standalone open also receives an unset stop pointer");
+        auto unloading = std::async(std::launch::async, [&] { host.unload(); });
+        check(wait_stopped(stop), "load unload: unload signals stop BEFORE the opener gate is released");
+        hold.release();
+        finish(unloading, "load unload: unload must finish after the opener is released");
+        check(state(host) == "empty" && !host.model_coming() && script.opened == 1 && script.alive == 0 &&
+                  !script.open_timed_out && host.load_error().empty() && host.info().value("error", "").empty() &&
+                  host.info()["model"].is_null(),
+              "load unload: the returned session is dropped and unload finishes empty without an error");
+    }
+    {
+        // Do not hold host_info(): it runs under m_ and would block cancel itself. The old
+        // session's first cancel instead holds load() after Loading is observable, before start_loader.
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        script.hold_first_cancel = true;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"),
+              "loader admission cancel: the old session is ready");
+        auto replacing = std::async(std::launch::async, [&] { return host.load(config(), config()); });
+        check(script.before_first_cancel.wait() && host.loading(),
+              "loader admission cancel: Loading is observable before the loader starts");
+        auto cancelling = std::async(std::launch::async, [&] { host.cancel(); });
+        const bool cancelled = cancelling.wait_for(5s) == std::future_status::ready;
+        check(cancelled, "loader admission cancel: an external second cancel completes while the first is held");
+        script.allow_first_cancel.release();
+        finish(cancelling, "loader admission cancel: external cancel must finish after failure cleanup");
+        check(finish(replacing, "loader admission cancel: the replacement must return").empty(),
+              "loader admission cancel: the replacement load was admitted");
+        check(wait_state(host, "empty") && !host.model_coming() && script.alive == 0 &&
+                  !script.first_cancel_timed_out && host.load_error().empty() && host.info().value("error", "").empty(),
+              "loader admission cancel: starting the loader cannot erase the completed cancel");
+    }
+    {
+        // load() still owns life_m_ at this gate. unload() must signal before taking that lock,
+        // not merely once it can join the loader, and must leave the planned job stopped.
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        script.hold_first_cancel = true;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"),
+              "lifecycle unload: the old session is ready");
+        const EngineHost::LoadJob job = host.begin_planning();
+        auto replacing =
+            std::async(std::launch::async, [&] { return host.load(config(), config(), std::nullopt, job); });
+        check(script.before_first_cancel.wait() && host.loading(),
+              "lifecycle unload: the replacement owns the lifecycle lock before starting its loader");
+        auto unloading = std::async(std::launch::async, [&] { host.unload(); });
+        check(wait_stopped(job.get()), "lifecycle unload: stop is raised BEFORE releasing load's lifecycle gate");
+        script.allow_first_cancel.release();
+        check(finish(replacing, "lifecycle unload: the replacement must return").empty(),
+              "lifecycle unload: the planned replacement was admitted");
+        finish(unloading, "lifecycle unload: unload must finish after lifecycle ownership is released");
+        host.end_planning(job);
+        check(job && job->load() && state(host) == "empty" && !host.model_coming() && script.alive == 0 &&
+                  !script.first_cancel_timed_out && host.load_error().empty() && host.info().value("error", "").empty(),
+              "lifecycle unload: the loader cannot revive the stopped job and unload ends empty");
+    }
+    {
+        // An unload can signal the old job, then lose the race for life_m_ to a new load. Its
+        // second signal, after taking that lock, must catch the newly admitted job as well.
+        auto bus_owner = std::make_unique<EventBus>();
+        Script old_script, new_script;
+        old_script.hold_first_cancel = true;
+        Gate hold;
+        const SessionOpener old_open = opener(old_script), new_open = opener(new_script, &hold);
+        std::atomic<int> attempts{0};
+        SessionOpener open = [&](const SessionConfig & cfg, std::string & error) -> std::unique_ptr<HostedSession> {
+            return attempts++ == 0 ? old_open(cfg, error) : new_open(cfg, error);
+        };
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, open);
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"),
+              "unload readmission: the old session is ready");
+        auto unloading = std::async(std::launch::async, [&] { host.unload(); });
+        check(old_script.before_first_cancel.wait(), "unload readmission: unload is held before lifecycle ownership");
+        check(host.load(config(), config()).empty() && new_script.open_started.wait(),
+              "unload readmission: a fresh load is admitted after unload's first signal");
+        const std::atomic<bool> * stop = new_script.open_stop.load();
+        check(stop && !stop->load(), "unload readmission: the first signal did not poison the new load's flag");
+        old_script.allow_first_cancel.release();
+        check(wait_stopped(stop), "unload readmission: the second signal stops the new open BEFORE gate release");
+        hold.release();
+        finish(unloading, "unload readmission: unload must finish after the new opener is released");
+        check(state(host) == "empty" && !host.model_coming() && old_script.alive == 0 && new_script.alive == 0 &&
+                  !old_script.first_cancel_timed_out && !new_script.open_timed_out && host.load_error().empty() &&
+                  host.info().value("error", "").empty(),
+              "unload readmission: unload catches the intervening load and finishes empty without an error");
+    }
+}
+
+static void planning_job_tests() {
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        std::atomic<int> accepted{0};
+        check(!host.accept_plan(nullptr, [&] { ++accepted; }) && accepted == 0,
+              "planning jobs: a null job cannot accept a result");
+        const EngineHost::LoadJob job = host.begin_planning();
+        check(job && !job->load() && state(host) == "planning" && !host.begin_planning(),
+              "planning jobs: one measurement is admitted at a time");
+        check(!host.load(config(), config()).empty() && script.opened == 0 && state(host) == "planning",
+              "planning jobs: a standalone load cannot replace an active measurement");
+        json accepted_info;
+        auto accepting = std::async(std::launch::async, [&] {
+            return host.accept_plan(job, [&] {
+                accepted_info = host.info();
+                ++accepted;
+            });
+        });
+        check(finish(accepting, "planning jobs: acceptance must be able to read the host") && accepted == 1 &&
+                  accepted_info.value("state", "") == "planning",
+              "planning jobs: the current result is accepted, with its callback outside the host state lock");
+        host.cancel();
+        check(job && job->load() && !host.accept_plan(job, [&] { ++accepted; }) && accepted == 1,
+              "planning jobs: cancel rejects later result side effects");
+        check(!host.load(config(), config(), std::nullopt, job).empty() && script.opened == 0 &&
+                  state(host) == "planning",
+              "planning jobs: cancellation between acceptance and load rejects the handoff without opening");
+        host.end_planning(job);
+        check(state(host) == "empty" && !host.model_coming() && host.load_error().empty(),
+              "planning jobs: ending the cancelled measurement leaves an empty, non-error host");
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"),
+              "planning jobs: the next standalone load is admitted");
+        const std::atomic<bool> * stop = script.open_stop.load();
+        check(stop && stop != job.get() && !stop->load() && job && job->load() && script.opened == 1,
+              "planning jobs: the standalone load uses a new flag and never clears the cancelled measurement");
+    }
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        Gate hold;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script, &hold));
+        EngineHost & host = *host_owner;
+        const EngineHost::LoadJob retired = host.begin_planning();
+        host.end_planning(retired);
+        const EngineHost::LoadJob current = host.begin_planning();
+        check(retired && current && retired != current && !retired->load() && !current->load(),
+              "planning jobs: a new measurement makes an uncancelled predecessor obsolete");
+        host.end_planning(retired);
+        check(state(host) == "planning" && host.model_coming() && !host.begin_planning(),
+              "planning jobs: ending an old job must not clear the new measurement");
+        int accepted = 0;
+        const EngineHost::LoadJob foreign = std::make_shared<std::atomic<bool>>(false);
+        check(!host.accept_plan(retired, [&] { ++accepted; }) && !host.accept_plan(foreign, [&] { ++accepted; }) &&
+                  accepted == 0,
+              "planning jobs: obsolete and foreign unset flags cannot commit results");
+        check(!host.load(config(), config(), std::nullopt, retired).empty() &&
+                  !host.load(config(), config(), std::nullopt, foreign).empty() && script.opened == 0 &&
+                  state(host) == "planning",
+              "planning jobs: obsolete and foreign handoffs cannot displace the current job");
+        check(host.accept_plan(current, [&] { ++accepted; }) && accepted == 1,
+              "planning jobs: refusing old work leaves the current result acceptable");
+        check(host.load(config(), config(), std::nullopt, current).empty(),
+              "planning jobs: the current measurement hands its job to the load");
+        host.end_planning(current);
+        check(script.open_started.wait() && script.open_stop.load() == current.get() && current && !current->load(),
+              "planning jobs: the loader receives exactly the admitted measurement's flag");
+        hold.release();
+        check(wait_state(host, "ready") && script.opened == 1 && script.alive == 1 && !script.open_timed_out,
+              "planning jobs: the accepted current handoff finishes ready");
     }
 }
 
@@ -981,14 +1229,16 @@ static void fallback_tests() {
         auto bus_owner = std::make_unique<EventBus>();
         Script script;
         std::atomic<int> attempts{0};
+        std::atomic<const std::atomic<bool> *> primary_stop{nullptr}, fallback_stop{nullptr};
         SessionOpener first_fails = [&](const SessionConfig & c,
                                         std::string & error) -> std::unique_ptr<HostedSession> {
             if (attempts++ == 0) {
+                primary_stop = c.stop;
                 error = "out of device memory";
                 return nullptr;
             }
             ++script.opened;
-            (void) c;
+            fallback_stop = c.stop;
             return std::make_unique<FakeSession>(script);
         };
         auto host_owner = std::make_unique<EngineHost>(*bus_owner, first_fails);
@@ -998,9 +1248,19 @@ static void fallback_tests() {
         fb.requested = config();
         fb.requested.n_threads = 3;
         std::string why;
-        fb.taken = [&](const std::string & e) { why = e; };
-        check(host.load(config(), config(), fb).empty() && wait_state(host, "ready"),
+        std::promise<json> taken_info;
+        auto read_info = taken_info.get_future();
+        fb.taken = [&](const std::string & e) {
+            why = e;
+            taken_info.set_value(host.info());
+        };
+        const std::string started = host.load(config(), config(), fb);
+        const json during_acceptance = finish(read_info, "fallback: the taken callback must be able to read the host");
+        check(started.empty() && wait_state(host, "ready"),
               "fallback: the first config fails, the load still ends ready");
+        const std::atomic<bool> * stop = primary_stop.load();
+        check(stop && stop == fallback_stop.load() && !stop->load() && during_acceptance.contains("state"),
+              "fallback: both native opens receive the same live stop pointer, and taken can read host info");
         RunConfig three = config();
         three.n_threads = 3;
         check(why == "out of device memory" && attempts == 2 && host.reload_keys(three).empty(),
@@ -1030,13 +1290,89 @@ static void fallback_tests() {
         Script script;
         auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
         EngineHost & host = *host_owner;
-        host.begin_planning();
+        const EngineHost::LoadJob job = host.begin_planning();
         check(host.model_coming() && !host.loaded_or_loading(), "planning: a model is coming");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
-        check(host.load(config(), config()).empty(), "planning: then the load");
-        host.end_planning();
+        check(host.load(config(), config(), std::nullopt, job).empty(), "planning: then the load");
+        host.end_planning(job);
         const ChatOutcome out = pending.get();
         check(out.status == 200 && out.result.generated_text == "hi", "planning: a turn sent while measuring waits");
+    }
+}
+
+static void fallback_cancel_tests() {
+    {
+        // Cancellation of a held primary that later reports failure must not try the other side.
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        Gate hold;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script, &hold, "primary open failed"));
+        EngineHost & host = *host_owner;
+        EngineHost::OpenFallback fb;
+        fb.effective = config();
+        fb.requested = config();
+        fb.requested.n_threads = 3;
+        std::atomic<int> taken{0}, stored_threads{config().n_threads};
+        fb.taken = [&](const std::string &) {
+            ++taken;
+            stored_threads = fb.requested.n_threads;
+        };
+        check(host.load(config(), config(), fb).empty(), "fallback cancel: the held primary starts");
+        check(script.open_started.wait(), "fallback cancel: the primary is held before reporting failure");
+        const std::atomic<bool> * stop = script.open_stop.load();
+        check(stop && !stop->load(), "fallback cancel: the primary receives an unset stop pointer");
+        host.cancel();
+        check(stop && stop->load(), "fallback cancel: the primary observes cancellation before it fails");
+        hold.release();
+        check(wait_state(host, "empty") && script.opened == 1 && script.alive == 0 && !script.open_timed_out,
+              "fallback cancel: a cancelled failed primary suppresses the fallback open entirely");
+        check(taken == 0 && stored_threads == config().n_threads && host.load_error().empty() &&
+                  host.info().value("error", "").empty() && host.info()["model"].is_null(),
+              "fallback cancel: no fallback side effects and no error survive the cancelled primary");
+    }
+    {
+        // The primary fails normally, but cancellation lands while its fallback opens. Even if
+        // that open ignores the flag and succeeds, its settings/records must never be accepted.
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        Gate hold;
+        std::atomic<int> attempts{0};
+        std::atomic<const std::atomic<bool> *> primary_stop{nullptr};
+        const SessionOpener held_fallback = opener(script, &hold);
+        SessionOpener first_fails = [&](const SessionConfig & cfg,
+                                        std::string & error) -> std::unique_ptr<HostedSession> {
+            if (attempts++ == 0) {
+                primary_stop = cfg.stop;
+                error = "primary device open failed";
+                return nullptr;
+            }
+            return held_fallback(cfg, error);
+        };
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, first_fails);
+        EngineHost & host = *host_owner;
+        EngineHost::OpenFallback fb;
+        fb.effective = config();
+        fb.requested = config();
+        fb.requested.n_threads = 3;
+        std::atomic<int> taken{0}, stored_threads{config().n_threads};
+        fb.taken = [&](const std::string &) {
+            ++taken;
+            stored_threads = fb.requested.n_threads;
+        };
+        check(host.load(config(), config(), fb).empty(), "fallback cancel: a primary with a fallback starts");
+        check(script.open_started.wait() && attempts == 2, "fallback cancel: the successful fallback is held open");
+        const std::atomic<bool> * stop = script.open_stop.load();
+        check(stop && stop == primary_stop.load() && !stop->load(),
+              "fallback cancel: the fallback receives the primary's same unset stop pointer");
+        host.cancel();
+        check(stop && stop->load(), "fallback cancel: cancel reaches the fallback before it returns a session");
+        hold.release();
+        check(wait_state(host, "empty") && attempts == 2 && script.opened == 1 && script.alive == 0 &&
+                  !script.open_timed_out,
+              "fallback cancel: a successful but cancelled fallback session is discarded");
+        check(taken == 0 && stored_threads == config().n_threads && host.load_error().empty() &&
+                  host.info().value("error", "").empty() && host.info()["model"].is_null(),
+              "fallback cancel: a cancelled successful fallback is not taken and changes no stored settings");
     }
 }
 
@@ -1091,8 +1427,11 @@ int main() {
     engine_thread_tests();
     routing_store_tests();
     fallback_tests();
+    fallback_cancel_tests();
     load_tests();
     loading_tests();
+    load_cancel_tests();
+    planning_job_tests();
     request_tests();
     cancel_tests();
     request_cancel_tests();

@@ -1,6 +1,6 @@
 # The seam: how we hook llama.cpp without forking it
 
-Everything that connects BigMoeOnEdge to llama.cpp goes through two public mechanisms.
+The serial expert streamer connects to llama.cpp through two public mechanisms.
 This file documents the exact contract so it can be re-verified when the submodule is
 updated.
 
@@ -59,6 +59,20 @@ its control flow. It stays inside the same callback contract; nothing is patched
 `gguf_init_from_file(..., no_alloc=true)` + `gguf_get_data_offset` +
 `gguf_get_tensor_offset` (all public) give each tensor's absolute byte offset in the file,
 without loading any tensor data. We match these to the captured tensors by name.
+
+## Model-load cancellation (public API)
+
+`llama_model_params.progress_callback` and `progress_callback_user_data` borrow the opening
+caller's atomic stop flag (`SessionConfig::stop`). The callback returns false after cancellation,
+so llama.cpp aborts the weight load and owns cleanup of that failed load. The main model, the
+answer-check reference and a separate MTP head use the same flag. Native placement fallbacks
+inherit the outer open's flag, not an unrelated flag from the fallback configuration.
+
+The engine also checks between opening stages and before accepting a placement. A cancelled open
+returns no session with "the load was stopped", without treating it as a device-failure verdict.
+The callback does not interrupt metadata parsing, context allocation, driver calls, warm-ups or
+dense copies in the middle of their work; these can finish before the next cooperative check.
+No llama.cpp patch or submodule change is needed for this contract.
 
 ## 3. The expert-ready hook (fork extension)
 

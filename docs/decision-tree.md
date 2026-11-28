@@ -297,6 +297,25 @@ flowchart TD
     srv_request_budget["<b>srv.request.budget</b><br/>A request's answer budget"]
     srv_request_think["<b>srv.request.think</b><br/>A chat request's thinking switch"]
     srv_request_sampling["<b>srv.request.sampling</b><br/>A request's own sampling, when it sends any"]
+    srv_plan_admit["<b>srv.plan.admit</b><br/>Admit one measurement before announcing it"]
+    srv_plan_end_current["<b>srv.plan.end-current</b><br/>An old scope cannot end a newer measurement"]
+    srv_plan_accept["<b>srv.plan.accept</b><br/>Accept only a current, unstopped result"]
+    srv_plan_scope["<b>srv.plan.scope</b><br/>End every admitted HTTP planning scope"]
+    srv_plan_stopped["<b>srv.plan.stopped</b><br/>Do not render a cancelled probe as an applicable plan"]
+    srv_plan_measure_admitted["<b>srv.plan.measure-admitted</b><br/>A standalone measurement gets its own job"]
+    srv_plan_cache["<b>srv.plan.cache</b><br/>Cache only a successful accepted measurement"]
+    srv_plan_measure_current["<b>srv.plan.measure-current</b><br/>A stopped standalone measurement is not cached"]
+    srv_load_plan_admitted["<b>srv.load.plan-admitted</b><br/>An auto-load requires an admitted measurement"]
+    srv_load_plan_stopped["<b>srv.load.plan-stopped</b><br/>A cancelled measurement does not continue the auto-load"]
+    srv_load_plan_current["<b>srv.load.plan-current</b><br/>Reject late plan results before applying them"]
+    srv_load_record_current["<b>srv.load.record-current</b><br/>Record a planned prefill attempt only for a current job"]
+    srv_load_handoff["<b>srv.load.handoff</b><br/>A plan's loader cannot revive a cancelled or obsolete job"]
+    srv_load_admit["<b>srv.load.admit</b><br/>A standalone load starts fresh, not an active measurement"]
+    srv_load_previous["<b>srv.load.previous</b><br/>Stop the old turn without cancelling the new load"]
+    srv_loader_open_current["<b>srv.loader.open-current</b><br/>A stopped job does not start another open"]
+    srv_loader_accept_fallback["<b>srv.loader.accept-fallback</b><br/>A late successful fallback cannot commit side effects"]
+    srv_loader_stopped["<b>srv.loader.stopped</b><br/>A stopped load ends empty, not in error"]
+    srv_cancel_job["<b>srv.cancel.job</b><br/>Cancellation reaches work that has no session yet"]
     srv_layers -->|"API requests"| srv_api_think
     srv_load_auto -->|"planning"| srv_load_projector
     srv_load_auto -->|"planned"| srv_load_plan_ok
@@ -304,6 +323,22 @@ flowchart TD
     srv_load_other_side -->|"names a side"| srv_plan_other_same
     srv_load_with_other -->|"other side"| srv_loader_fallback
     srv_loader_fallback -->|"other side opened"| srv_loader_taken
+    srv_plan_admit --> srv_plan_end_current
+    srv_plan_admit --> srv_plan_accept
+    srv_plan_admit --> srv_plan_scope
+    srv_plan_admit --> srv_plan_stopped
+    srv_plan_admit --> srv_plan_measure_admitted
+    srv_plan_accept --> srv_plan_cache
+    srv_plan_accept --> srv_plan_measure_current
+    srv_load_auto --> srv_load_plan_admitted
+    srv_load_auto --> srv_load_plan_stopped
+    srv_load_auto --> srv_load_plan_current
+    srv_load_auto --> srv_load_record_current
+    srv_plan_accept --> srv_load_handoff
+    srv_load_admit --> srv_load_previous
+    srv_load_admit --> srv_loader_open_current
+    srv_loader_fallback --> srv_loader_accept_fallback
+    srv_load_admit --> srv_loader_stopped
     srv_defaults_overlap -.-> srv_layers
     srv_layers -.-> srv_forget_missing
     srv_forget_missing -.-> srv_autoload
@@ -318,6 +353,9 @@ flowchart TD
     srv_chat_error -.-> srv_request_budget
     srv_request_budget -.-> srv_request_think
     srv_request_think -.-> srv_request_sampling
+    srv_request_sampling -.-> srv_plan_admit
+    srv_plan_admit -.-> srv_load_admit
+    srv_load_admit -.-> srv_cancel_job
 ```
 <!-- /dt:graph -->
 
@@ -394,15 +432,15 @@ flowchart TD
 - when: planned
 - code: `server/http_server.cpp` · `load_current_locked`
 - condition: `if (p.ok) {`
-- ok → `store.apply_plan(p.values, ...)`, and the plan becomes `load_plan`.
-- failed → nothing replaces the layer, and the previous plan layer (possibly another model's) keeps
-  applying.
+- Only an accepted, current job enters this callback (`srv.plan.accept`).
+- ok → `store.apply_plan(p.values, ...)`, and the plan becomes `load_plan` and `last_plan`.
+- failed → the previous plan layer is cleared; a cancelled job never enters either branch.
 
 #### `srv.load.other-side` — A plan that names a side gets its other side
 - parent: `srv.load.plan-ok`
 - when: ok
 - code: `server/http_server.cpp` · `load_current_locked`
-- condition: `if (p.names_side()) {`
+- condition: `if (p.ok && p.names_side()) {`
 - `names_side` is true when the plan times one side against another: a device tier, a width side,
   or a shared device side. Then `plan_other_side` re-plans on the same facts with the named side
   counted as lost.
@@ -440,16 +478,18 @@ flowchart TD
 #### `srv.load.with-other` — Load, with the other side as a fallback
 - parent: —
 - code: `server/http_server.cpp` · `load_current_locked`
-- condition: `if (!other.ok) return host.load(effective, requested);`
+- condition: `if (!other.ok) return host.load(effective, requested, std::nullopt, planning.job);`
 - no other side → a plain load.
-- other side → `host.load(..., fallback_for(named, other))`.
+- other side → `host.load(..., fallback_for(named, other), planning.job)`.
+- Both carry the measurement's job through the atomic handoff; neither resets its stop flag.
 
 #### `srv.loader.fallback` — The plan's side would not open: open the other side
 - parent: `srv.load.with-other`
 - when: other side
 - code: `server/engine_host.cpp` · `EngineHost::start_loader`
-- condition: `if (!s && fallback && !load_cancelled_.load()) {`
-- The other side opens on the engine thread. When it opens, `taken` runs (`srv.loader.taken`).
+- condition: `if (!s && fallback && !job->load()) {`
+- The other side opens on the engine thread with the same stop flag. Only an accepted successful
+  fallback runs `taken` (`srv.loader.accept-fallback`, then `srv.loader.taken`).
 - When both fail, the first error is the one reported.
 
 #### `srv.loader.taken` — Count the side that would not open
@@ -506,6 +546,132 @@ flowchart TD
 - Only a request that sends a sampling field gets an override. The session applies it in
   `req.sampler`, and ignores it while speculation is configured.
 
+### Cancellation lifecycle
+
+#### `srv.plan.admit` — Admit one measurement before announcing it
+- parent: —
+- code: `server/engine_host.cpp` · `EngineHost::begin_planning`
+- condition: `if (planning_.load() || state_ == State::Loading) return nullptr;`
+- The caller owns `measure_m`; admission under the lifecycle/job/state locks creates a fresh stop
+  flag before publishing planning. A queued measurement never resets an active job's flag.
+
+#### `srv.plan.end-current` — An old scope cannot end a newer measurement
+- parent: `srv.plan.admit`
+- code: `server/engine_host.cpp` · `EngineHost::end_planning`
+- condition: `if (job != job_) return;`
+- Only the current scope clears planning and wakes turns; unload may have already cleared it.
+
+#### `srv.plan.accept` — Accept only a current, unstopped result
+- parent: `srv.plan.admit`
+- code: `server/engine_host.cpp` · `EngineHost::accept_plan`
+- condition: `if (!job || job != job_ || job->load()) return false;`
+- Under the same job lock as cancellation, accept settings/cache/record effects or reject them.
+  The callback can read host state, but cannot start/end a lifecycle operation. Already accepted
+  effects are not rolled back by a later cancel.
+
+#### `srv.plan.scope` — End every admitted HTTP planning scope
+- parent: `srv.plan.admit`
+- code: `server/http_server.cpp` · `Planning`
+- condition: `if (job) host.end_planning(job);`
+- The scope ends on success and every early exit, including cancellation.
+
+#### `srv.plan.stopped` — Do not render a cancelled probe as an applicable plan
+- parent: `srv.plan.admit`
+- code: `server/planner_adapter.cpp` · `make_plan`
+- condition: `if (stop && stop->load(std::memory_order_relaxed)) {`
+- Return not-ok with an available, cancelled, declined body and "the measurement was stopped".
+
+#### `srv.plan.measure-admitted` — A standalone measurement gets its own job
+- parent: `srv.plan.admit`
+- code: `server/http_server.cpp` · `register_routes`
+- condition: `if (!planning.job) return send_error(res, 409, "busy: a model is loading or being measured");`
+- Admission follows `measure_m`, including a second loading check. The scope remains admitted
+  until the measurement result is accepted or discarded.
+
+#### `srv.plan.cache` — Cache only a successful accepted measurement
+- parent: `srv.plan.accept`
+- code: `server/http_server.cpp` · `register_routes`
+- condition: `if (p.ok) {`
+- `last_plan` changes only inside acceptance; this never applies settings or starts a loader.
+
+#### `srv.plan.measure-current` — A stopped standalone measurement is not cached
+- parent: `srv.plan.accept`
+- code: `server/http_server.cpp` · `register_routes`
+- condition: `if (!accepted)`
+- Return 200 with `available`, `cancelled`, `declined` true and the stop reason. Keep the prior cache.
+
+#### `srv.load.plan-admitted` — An auto-load requires an admitted measurement
+- parent: `srv.load.auto`
+- code: `server/http_server.cpp` · `load_current_locked`
+- condition: `if (!planning.job) return "a model is already loading or being measured";`
+- Hold `measure_m` through plan-to-load handoff; internal unload precedes fresh job admission.
+
+#### `srv.load.plan-stopped` — A cancelled measurement does not continue the auto-load
+- parent: `srv.load.auto`
+- code: `server/http_server.cpp` · `load_current_locked`
+- condition: `if (planning.job->load()) return "the load was stopped";`
+- Check before re-planning an alternative; the later acceptance/handoff checks close the races.
+
+#### `srv.load.plan-current` — Reject late plan results before applying them
+- parent: `srv.load.auto`
+- code: `server/http_server.cpp` · `load_current_locked`
+- condition: `if (!accepted) return "the load was stopped";`
+- A cancelled/obsolete result changes no settings, cache or records and starts no loader.
+
+#### `srv.load.record-current` — Record a planned prefill attempt only for a current job
+- parent: `srv.load.auto`
+- code: `server/http_server.cpp` · `load_current_locked`
+- condition: `if (planning.job) {`
+- condition: `if (!host.accept_plan(planning.job, [&] { mark_prefill_unconfirmed(effective); }))`
+- Cancelled → return before the record write. No auto plan → the existing direct-load record path.
+
+#### `srv.load.handoff` — A plan's loader cannot revive a cancelled or obsolete job
+- parent: `srv.plan.accept`
+- code: `server/engine_host.cpp` · `EngineHost::load`
+- condition: `if (job && (job != job_ || job->load())) return "the load was stopped";`
+- Check under the job/state locks before Loading is observable. The loader captures this same job.
+
+#### `srv.load.admit` — A standalone load starts fresh, not an active measurement
+- parent: —
+- code: `server/engine_host.cpp` · `EngineHost::load`
+- condition: `if (!job) {`
+- condition: `if (planning_.load()) return "a plan is already being measured";`
+- No supplied measurement → create a fresh job before announcing Loading. No reset in the loader.
+
+#### `srv.load.previous` — Stop the old turn without cancelling the new load
+- parent: `srv.load.admit`
+- code: `server/engine_host.cpp` · `EngineHost::load`
+- condition: `if (previous) previous->cancel();`
+- Cancels only the old session; the host-wide cancel would also stop the newly admitted job.
+
+#### `srv.loader.open-current` — A stopped job does not start another open
+- parent: `srv.load.admit`
+- code: `server/engine_host.cpp` · `EngineHost::start_loader`
+- condition: `if (job->load()) return std::unique_ptr<HostedSession>{};`
+- Both host placements borrow this job's flag as `SessionConfig::stop` on the engine thread.
+
+#### `srv.loader.accept-fallback` — A late successful fallback cannot commit side effects
+- parent: `srv.loader.fallback`
+- code: `server/engine_host.cpp` · `EngineHost::start_loader`
+- condition: `if (!job->load() && used_fallback) {`
+- Acceptance shares the job lock with cancel/unload. Only then change requested settings and call
+  `taken`, outside the state lock so the callback may read the host.
+
+#### `srv.loader.stopped` — A stopped load ends empty, not in error
+- parent: `srv.load.admit`
+- code: `server/engine_host.cpp` · `EngineHost::start_loader`
+- condition: `if (job->load()) {`
+- Discard even a successfully opened session; clear model/error state. An ordinary failed open
+  still ends in error, and an accepted successful one ends ready.
+
+#### `srv.cancel.job` — Cancellation reaches work that has no session yet
+- parent: —
+- code: `server/engine_host.cpp` · `EngineHost::cancel`
+- condition: `if (job_) job_->store(true);`
+- Signal the admitted measurement/load under the job lock, then cancel the session's turn as before.
+  Unload signals both before and after taking lifecycle ownership, joins any loader, then empties
+  the host. It does not wait out an active measurement or permit its later handoff.
+
 ## plan — the hardware planner (`--auto`)
 
 `core/src/plan/`. `probe_and_plan` first measures the facts:
@@ -532,6 +698,7 @@ flowchart TD
     plan_facts_routing["<b>plan.facts.routing</b><br/>The model's own hit curve, when a routing record fits"]
     plan_facts_knobs["<b>plan.facts.knobs</b><br/>Verdicts measured on this machine, this engine version"]
     plan_facts_gate["<b>plan.facts.gate</b><br/>Time the gate GEMV (route-ahead only)"]
+    plan_facts_stop["<b>plan.facts.stop</b><br/>A cancelled measurement stops at a stage boundary"]
     plan_facts_storage["<b>plan.facts.storage</b><br/>Measure the storage"]
     plan_facts_backends["<b>plan.facts.backends</b><br/>Which backend of a card the fitter sees"]
     plan_layout_narrow["<b>plan.layout.narrow</b><br/>Re-place at the narrower width the plan chose"]
@@ -596,7 +763,8 @@ flowchart TD
     plan_facts_isolated -.-> plan_facts_routing
     plan_facts_routing -.-> plan_facts_knobs
     plan_facts_knobs -.-> plan_facts_gate
-    plan_facts_gate -.-> plan_facts_storage
+    plan_facts_gate -.-> plan_facts_stop
+    plan_facts_stop -.-> plan_facts_storage
     plan_facts_storage -.-> plan_facts_backends
     plan_facts_backends -.-> plan_layout_narrow
     plan_layout_narrow -.-> plan_layout_whole
@@ -664,6 +832,14 @@ flowchart TD
 - code: `core/src/plan/auto_plan.cpp` · `probe_and_plan`
 - condition: `if (cfg.moe.route_ahead > 0) probe_gate_gemv(r.hw, r.model);`
 - It feeds `plan.gate-mirror`.
+
+#### `plan.facts.stop` — A cancelled measurement stops at a stage boundary
+- parent: —
+- code: `core/src/plan/auto_plan.cpp` · `probe_and_plan`
+- condition: `if (!opt.stop || !opt.stop->load(std::memory_order_relaxed)) return false;`
+- Check before each stage and after the rules. A running probe finishes; no next stage starts.
+  Return a declined plan with the request unchanged and no partial rule decisions. The caller
+  must not continue an auto-load after cancellation.
 
 #### `plan.facts.storage` — Measure the storage
 - parent: —
@@ -1190,6 +1366,24 @@ flowchart TD
     open_prefill_confirm["<b>open.prefill.confirm</b><br/>Check the prefill device's answers"]
     open_prefill_record["<b>open.prefill-record</b><br/>What came of the prefill device, for this model's record"]
     open_trials["<b>open.trials</b><br/>Which knobs this load times"]
+    open_stopped["<b>open.stopped</b><br/>One stop predicate for every placement and opening stage"]
+    open_attempt_before["<b>open.attempt.before</b><br/>Native fallbacks inherit the outer open's flag"]
+    open_attempt_after["<b>open.attempt.after</b><br/>Discard a placement that succeeds after cancellation"]
+    open_entry_stopped["<b>open.entry.stopped</b><br/>A cancelled primary never becomes a fallback verdict"]
+    open_unopened_stopped["<b>open.unopened.stopped</b><br/>A cancelled explicit fallback has no device-failure record"]
+    open_reopen_stopped["<b>open.reopen.stopped</b><br/>A cancelled answer-check fallback has no verdict"]
+    open_placed_admit["<b>open.placed.admit</b><br/>A stopped placement starts no native opening"]
+    open_load_admit["<b>open.load.admit</b><br/>Check before loading the model or the answer-check reference"]
+    open_load_stop["<b>open.load.stop</b><br/>The public progress callback aborts weight loading"]
+    open_load_failed["<b>open.load.failed</b><br/>A stopped weight load is not a file error"]
+    open_load_completed["<b>open.load.completed</b><br/>Free weights that arrive after the stop"]
+    open_load_mtp_head_failed["<b>open.load.mtp-head.failed</b><br/>A cancelled MTP-head load keeps the stop reason"]
+    open_steps["<b>open.steps</b><br/>Check between the initial opening stages"]
+    open_steps_spec["<b>open.steps.spec</b><br/>Do not initialize speculation after cancellation"]
+    open_steps_device_cache["<b>open.steps.device-cache</b><br/>The device-cache stage also checks stop"]
+    open_steps_prefill["<b>open.steps.prefill</b><br/>Check before opening the prefill device"]
+    open_steps_prefill_check["<b>open.steps.prefill-check</b><br/>Check before confirming the prefill device"]
+    open_steps_ready["<b>open.steps.ready</b><br/>Check before describing the completed placement"]
     open_entry -->|"no check ran"| open_unopened
     open_entry -->|"check ran"| open_verdict
     open_verdict -->|"not kept"| open_reopen
@@ -1222,6 +1416,22 @@ flowchart TD
     open_prefill_open -->|"opening"| open_prefill_layer_weights
     open_prefill_open -->|"opening"| open_prefill_slots
     open_prefill_open -->|"opened"| open_prefill_confirm
+    open_stopped --> open_attempt_before
+    open_stopped --> open_attempt_after
+    open_entry --> open_entry_stopped
+    open_unopened --> open_unopened_stopped
+    open_reopen --> open_reopen_stopped
+    open_stopped --> open_placed_admit
+    open_stopped --> open_load_admit
+    open_stopped --> open_load_stop
+    open_load_stop --> open_load_failed
+    open_load_stop --> open_load_completed
+    open_load_mtp_head --> open_load_mtp_head_failed
+    open_steps --> open_steps_spec
+    open_steps --> open_steps_device_cache
+    open_steps --> open_steps_prefill
+    open_steps --> open_steps_prefill_check
+    open_steps --> open_steps_ready
     open_entry -.-> open_load_cpu_only
     open_load_cpu_only -.-> open_load_lazy
     open_load_lazy -.-> open_load_overrides
@@ -1247,6 +1457,8 @@ flowchart TD
     open_device_cache -.-> open_prefill_open
     open_prefill_open -.-> open_prefill_record
     open_prefill_record -.-> open_trials
+    open_trials -.-> open_stopped
+    open_stopped -.-> open_steps
 ```
 <!-- /dt:graph -->
 
@@ -1278,7 +1490,7 @@ flowchart TD
 - parent: `open.verdict`
 - when: not kept
 - code: `core/src/engine/session.cpp` · `Session::open`
-- condition: `self = open_placed(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), error, route_trace, compute_trace,`
+- condition: `self = place(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), nullptr);`
 - `cfg.fallback` (the streaming plan) where there is one. Otherwise the same configuration on the
   cores (`on_cores`: no device layers, CPU only).
 - Answers that differed → the device's answer is recorded `-1`. Cores faster → `+1` and both rates.
@@ -1442,6 +1654,7 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::open_placed`
 - condition: `if (check && !cfg.trial.answer_device.empty()) {`
+- condition: `if (o.stopped()) return nullptr;`
 - It runs when the plan put the whole resident model on a shared device (`plan.shared`). A
   reference copy is loaded on the cores. A probe text is decoded on both, row by row, then once
   wide.
@@ -1484,7 +1697,7 @@ flowchart TD
 #### `open.stream` — Bind the streamer
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::open_placed`
-- condition: `if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;`
+- condition: `if (cfg.moe.enabled && (o.stopped() || !im.bind_streaming(o))) return nullptr;`
 - Streaming on → a one-token warm-up decode, during which the hook captures every expert tensor.
   The steps below then run in order.
 
@@ -1624,13 +1837,13 @@ flowchart TD
 #### `open.unstreamed-record` — Record the routing of a resident model
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::open_placed`
-- condition: `if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;`
+- condition: `if (records_unstreamed(cfg) && (o.stopped() || !im.arm_unstreamed_record(o))) return nullptr;`
 - Streaming off, `record_unstreamed`, a token budget → a warm-up capture arms the routing record.
 
 #### `open.host-buffer` — Copy the experts into a device's host buffer
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::open_placed`
-- condition: `if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;`
+- condition: `if (!cfg.moe.expert_host_buffer.empty() && (o.stopped() || !im.stage_experts_in_host_buffer(o))) return nullptr;`
 - No such device or buffer, or no expert tensor → kept on the mapping.
 
 #### `open.host-buffer.room` — The copy must fit
@@ -1710,6 +1923,120 @@ flowchart TD
   2. overlap (both sides, when the hook exists);
   3. rate, timing one side (`device_tier`, `width_side` or `shared_device_side`).
 - A cost probe always measures the plain decode cost (`req.trial`).
+
+### Opening cancellation
+
+#### `open.stopped` — One stop predicate for every placement and opening stage
+- parent: —
+- code: `core/src/engine/opening_stop.h` · `opening_stopped`
+- condition: `if (!cfg.stop || !cfg.stop->load(std::memory_order_relaxed)) return false;`
+- Raised → report "the load was stopped", not a model/device failure. The flag is borrowed only
+  until open returns. Checks are cooperative; an in-flight driver, metadata, warm-up or copy stage
+  may finish before the next check.
+
+#### `open.attempt.before` — Native fallbacks inherit the outer open's flag
+- parent: `open.stopped`
+- code: `core/src/engine/opening_stop.h` · `open_attempt`
+- condition: `if (opening_stopped(attempt, error)) return {};`
+- Replace the attempt's flag with the outer caller's, including an explicit fallback. Do not
+  start the placement when stopped.
+
+#### `open.attempt.after` — Discard a placement that succeeds after cancellation
+- parent: `open.stopped`
+- code: `core/src/engine/opening_stop.h` · `open_attempt`
+- condition: `if (opening_stopped(attempt, error)) return {};`
+- Return no session; normal ownership destroys the attempt's result.
+
+#### `open.entry.stopped` — A cancelled primary never becomes a fallback verdict
+- parent: `open.entry`
+- code: `core/src/engine/session.cpp` · `Session::open`
+- condition: `if (opening_stopped(cfg, error)) return nullptr;`
+- Stop before examining the answer check or deciding whether to reopen.
+
+#### `open.unopened.stopped` — A cancelled explicit fallback has no device-failure record
+- parent: `open.unopened`
+- code: `core/src/engine/session.cpp` · `Session::open`
+- condition: `if (opening_stopped(cfg, error)) return nullptr;`
+- Preserve the stop reason; never mark the primary device unviable for this cancelled open.
+
+#### `open.reopen.stopped` — A cancelled answer-check fallback has no verdict
+- parent: `open.reopen`
+- code: `core/src/engine/session.cpp` · `Session::open`
+- condition: `if (opening_stopped(cfg, error)) return nullptr;`
+- Preserve the stop reason and skip the check's verdict/rate records.
+
+#### `open.placed.admit` — A stopped placement starts no native opening
+- parent: `open.stopped`
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (opening_stopped(cfg, error)) return nullptr;`
+
+#### `open.load.admit` — Check before loading the model or the answer-check reference
+- parent: `open.stopped`
+- code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
+- condition: `if (o.stopped()) return false;`
+
+#### `open.load.stop` — The public progress callback aborts weight loading
+- parent: `open.stopped`
+- code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
+- condition: `if (cfg.stop) {`
+- The callback returns false after the flag is raised. The main model, answer-check reference
+  and separate MTP head use the same flag; llama.cpp owns cleanup of an aborted weight load.
+
+#### `open.load.failed` — A stopped weight load is not a file error
+- parent: `open.load.stop`
+- code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
+- condition: `if (!m) {`
+- condition: `if (o.stopped()) return false;`
+- Cancellation keeps the stop reason; an ordinary failure keeps the model-load error.
+
+#### `open.load.completed` — Free weights that arrive after the stop
+- parent: `open.load.stop`
+- code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
+- condition: `if (o.stopped()) {`
+- Free the successfully returned model before handing it to the session or reference caller.
+
+#### `open.load.mtp-head.failed` — A cancelled MTP-head load keeps the stop reason
+- parent: `open.load.mtp-head`
+- code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
+- condition: `if (!h) {`
+- condition: `if (o.stopped()) return false;`
+- The head borrows the main model's progress callback; a late success is owned and then discarded.
+
+#### `open.steps` — Check between the initial opening stages
+- parent: —
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (o.stopped() || !im.load_model(o)) return nullptr;`
+- condition: `if (o.stopped() || !im.read_model(o)) return nullptr;`
+- condition: `if (o.stopped() || !im.build_hook(o)) return nullptr;`
+- condition: `if (o.stopped() || !im.create_contexts(o)) return nullptr;`
+- condition: `if (o.stopped()) return nullptr;`
+- No next stage begins after the flag is observed. In-flight work is allowed to finish safely.
+
+#### `open.steps.spec` — Do not initialize speculation after cancellation
+- parent: `open.steps`
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (o.stopped() || !im.init_speculation(o)) return nullptr;`
+
+#### `open.steps.device-cache` — The device-cache stage also checks stop
+- parent: `open.steps`
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (cfg.moe.device_cache_mb > 0 && (o.stopped() || !im.arm_device_cache(o))) return nullptr;`
+
+#### `open.steps.prefill` — Check before opening the prefill device
+- parent: `open.steps`
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (im.prefill && (o.stopped() || !im.open_prefill_device(o))) return nullptr;`
+
+#### `open.steps.prefill-check` — Check before confirming the prefill device
+- parent: `open.steps`
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (im.prefill && cfg.prefill.verify && (o.stopped() || !im.confirm_prefill_device(o))) return nullptr;`
+
+#### `open.steps.ready` — Check before describing the completed placement
+- parent: `open.steps`
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (o.stopped()) return nullptr;`
+- The outer attempt checks once more before returning the session to its caller.
 
 ## req — one request
 
