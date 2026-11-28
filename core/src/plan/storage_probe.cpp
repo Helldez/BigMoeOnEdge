@@ -13,11 +13,13 @@
 //     mapping, reopen the lanes, read again.
 //
 // The probe is bounded in bytes, not in time, and it is not small. The decisive point - the model's
-// own slice - moves 512 MiB per sample, three repeats at each of three lane counts: 4.5 GiB. The
-// rest is counted in requests: the curve's two neighbouring sizes and both arms of the mapping
-// question come to about 2150 slices' worth, and the refault price to 480 pages (2 MiB at 4 KiB). At
-// a 512 KiB slice that is roughly 5.5 GiB read from the file in all. It runs only when asked.
+// own slice - moves 512 MiB per sample, three repeats at each of three lane counts: 4.5 GiB, and
+// 1.5 GiB more where the curve is still climbing at four lanes and goes on to eight. The rest is
+// counted in requests: the curve's two neighbouring sizes and both arms of the mapping question come
+// to about 2150 slices' worth, and the refault price to 480 pages (2 MiB at 4 KiB). At a 512 KiB slice
+// that is roughly 5.5 GiB read from the file in all, 7 GiB with eight lanes. It runs only when asked.
 
+#include "bmoe/config.h"
 #include "bmoe/probe.h"
 
 #include "../io/file_reader.h"
@@ -50,6 +52,10 @@ using clock_t_ = std::chrono::steady_clock;
 // serialise.
 constexpr int k_lane_counts[] = {1, 2, 4};
 constexpr int k_lanes_max = k_lane_counts[sizeof(k_lane_counts) / sizeof(k_lane_counts[0]) - 1];
+static_assert(k_lanes_max == (int) StorageFacts::lanes_always, "the curve every probe draws is the one the plan reads");
+// Where the curve is still climbing at four it keeps doubling (see the loop), up to the most lanes a
+// plan can give the reads: a rate at more would be one no configuration could use.
+constexpr int k_lanes_cap = MoeStreamConfig::io_threads_max;
 
 // Samples per point that decides something, and per side of the mapping question: the fewest whose
 // median a single outlier cannot move.
@@ -309,7 +315,7 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
     }
 
     FileReader rd;
-    if (!rd.open(model_path, k_lanes_max, /*direct=*/true, (size_t) largest)) return;
+    if (!rd.open(model_path, k_lanes_cap, /*direct=*/true, (size_t) largest)) return;
     // What the file's filesystem states, or nothing: the reader's fallback granule is a substitute
     // it reads with, not a fact about this storage.
     hw.storage.align = rd.align_reported() ? (uint32_t) rd.align() : 0;
@@ -321,22 +327,34 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
     const uint64_t sizes[3] = {std::max<uint64_t>((uint64_t) rd.align(), slice / 4), slice, largest};
 
     uint64_t seed = 0x1234567ull;
-    for (uint64_t sz : sizes) {
-        for (int lanes : k_lane_counts) {
-            // Only the model's own slice size decides anything - it is where the lane count is read
-            // off and where the expert lane is priced - so it is the only size worth paying repeats
-            // AND a long sample for. The neighbours are there to show the shape of the curve, and
-            // one short sample says enough about a shape.
-            const bool decisive = sz == slice;
-            const int repeats = decisive ? k_repeats : 1;
-            const int reqs = decisive ? requests_per_lane(sz, lanes, decisive_bytes, per_lane) : per_lane;
-            double spread = 0.0;
-            const double r = median_rate(rd, sz, lanes, reqs, seed, repeats, Pattern::Spread, &spread);
-            if (decisive && spread > hw.storage.rate_spread) hw.storage.rate_spread = spread;
-            seed += 0x9E3779B9ull;
-            if (r <= 0.0) continue;
-            hw.storage.rate_curve.push_back({(uint32_t) sz, (uint32_t) lanes, r});
-        }
+    // Only the model's own slice size decides anything - it is where the lane count is read off and
+    // where the expert lane is priced - so it is the only size worth paying repeats AND a long sample
+    // for. The neighbours are there to show the shape of the curve, and one short sample says enough
+    // about a shape.
+    auto measure = [&](uint64_t sz, int lanes) {
+        const bool decisive = sz == slice;
+        const int repeats = decisive ? k_repeats : 1;
+        const int reqs = decisive ? requests_per_lane(sz, lanes, decisive_bytes, per_lane) : per_lane;
+        double spread = 0.0;
+        const double r = median_rate(rd, sz, lanes, reqs, seed, repeats, Pattern::Spread, &spread);
+        if (decisive && spread > hw.storage.rate_spread) hw.storage.rate_spread = spread;
+        seed += 0x9E3779B9ull;
+        if (r > 0.0) hw.storage.rate_curve.push_back({(uint32_t) sz, (uint32_t) lanes, r});
+    };
+    for (uint64_t sz : sizes)
+        for (int lanes : k_lane_counts)
+            measure(sz, lanes);
+    // Storage still gaining at the last doubling has not shown its knee: the curve goes on doubling, at
+    // every size so each lane count is read at the same points, for as long as the slice's rate still
+    // clears the tie band the lane pick reads (StorageFacts::best_lanes). Measured on a unified-memory
+    // laptop's SSD: four lanes clearly past two, and eight lanes filling a wide prompt's misses 8% faster
+    // than four, which a curve stopped at four could not offer.
+    for (int lanes = k_lanes_max; lanes * 2 <= k_lanes_cap; lanes *= 2) {
+        const double at = hw.storage.rate_at((uint32_t) slice, (uint32_t) lanes);
+        const double half = hw.storage.rate_at((uint32_t) slice, (uint32_t) (lanes / 2));
+        if (at <= 0.0 || half <= 0.0 || at * StorageFacts::lane_tie_fraction <= half) break;
+        for (uint64_t sz : sizes)
+            measure(sz, lanes * 2);
     }
 
     // The price of a REFAULT, measured as the kernel pays it: one page at a time - this machine's

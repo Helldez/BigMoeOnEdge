@@ -749,7 +749,7 @@ double host_expert_flash_seconds(const Planning & s, uint64_t host_expert_bytes,
     const uint64_t ram = holdable > margin ? holdable - margin : 0;
     if (host_expert_bytes <= ram) return 0.0;
     const uint32_t slice = (uint32_t) m.expert_slice_bytes;
-    const uint32_t lanes = slice ? s.hw.storage.best_lanes(slice) : 0;
+    const uint32_t lanes = slice ? s.hw.storage.best_lanes(slice, s.hw.lanes_beside(s.hw.best_threads)) : 0;
     const double mibs = slice && lanes ? s.hw.storage.rate_at(slice, lanes) : 0.0;
     if (mibs <= 0.0) return 0.0;
     // The RAM cache holds `ram` of the host's experts: its share of the whole set's curve.
@@ -3681,7 +3681,12 @@ void note_checkpoint_budget(Planning & s) {
 void choose_io_lanes(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
     if (s.pinned("io-threads", u64s((uint64_t) moe.io_threads))) return;
-    const uint32_t want = s.hw.storage.best_lanes((uint32_t) s.model.expert_slice_bytes);
+    // The stream's experts are computed on these same cores, so it reads only the lanes every probe
+    // draws (HardwareProfile::lanes_beside): the probe measures the storage alone.
+    const uint32_t threads =
+        s.req.is_pinned("threads") && s.p.config.n_threads > 0 ? (uint32_t) s.p.config.n_threads : s.hw.best_threads;
+    const uint32_t beside = s.hw.lanes_beside(threads);
+    const uint32_t want = s.hw.storage.best_lanes((uint32_t) s.model.expert_slice_bytes, beside);
     // dt:plan.io-lanes
     if (want > 0) {
         const int lanes = std::min<int>((int) want, MoeStreamConfig::io_threads_max);
@@ -3689,7 +3694,8 @@ void choose_io_lanes(Planning & s) {
         s.note("io-threads", u64s((uint64_t) moe.io_threads), Source::Measured,
                u64s((uint64_t) moe.io_threads) + " parallel reads: the fastest rate this storage gave.",
                "the highest measured rate for this model's " + u64s(s.model.expert_slice_bytes >> 10) +
-                   " KiB expert slice on this storage");
+                   " KiB expert slice on this storage, of the lane counts up to " + u64s(beside) +
+                   ", the ones every probe draws: these reads share the cores with the compute");
     } else {
         s.note("io-threads", u64s((uint64_t) moe.io_threads), Source::Unprobed,
                u64s((uint64_t) moe.io_threads) + " parallel reads, the default: storage speed was not measured.",
@@ -4448,6 +4454,9 @@ Plan shared_device_cache(Plan p,
     }
     const uint64_t cache_bytes = (uint64_t) std::max(0, p.config.moe.cache_mb) << 20;
     const uint32_t slice = (uint32_t) m.expert_slice_bytes;
+    // The fill lanes read the whole curve, past the four every probe draws where the storage still
+    // climbs: the experts they bring in are computed on the device, so the lanes only wait on the
+    // storage and take nothing from the cores' compute (HardwareProfile::lanes_beside is the stream's).
     const uint32_t lanes = slice ? hw.storage.best_lanes(slice) : 0;
     const double flash_mibs = slice && lanes ? hw.storage.rate_at(slice, lanes) : 0.0;
     const double routed = (double) m.group(WeightGroup::Experts).bytes_per_token;

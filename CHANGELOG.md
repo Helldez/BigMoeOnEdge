@@ -88,6 +88,17 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
 
 ### Changed
+- **The storage probe draws its rate curve past four lanes where the storage is still climbing, for the
+  device cache's fill.** The `--auto` probe measured one, two and four lanes. Now, where the expert
+  slice's rate at four lanes clears two by more than the 5% tie band, the curve keeps doubling, at all
+  three sizes, up to `io_threads_max` (8). Only a reader whose experts compute elsewhere reads the new
+  points: the device expert cache's fill lanes. The stream's `io-threads`, whose experts compute on the
+  same cores, keep the pick over one, two and four lanes on every machine, a phone included
+  (`HardwareProfile::lanes_beside`), because the probe measures the storage alone: on a phone eight lanes
+  did not decode faster beside the compute. A bound by free cores is in place, unarmed until measured. On a 16 GB unified-memory laptop
+  with Qwen3.6-35B Q4_K_M the fill took 8 lanes, and a 2959-token prompt prefilled at 390-396 tok/s
+  instead of 367 (first token 15.0-15.3 s instead of 15.8), decode unchanged (24.2 tok/s on code); its
+  stream stays at 4 ([hardware-planning.md](docs/hardware-planning.md)).
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.

@@ -295,10 +295,17 @@ struct StorageFacts {
     // is a latency floor would invent throughput between the samples.
     double rate_at(uint32_t request_bytes, uint32_t lanes) const;
 
-    // The largest lane count whose measured rate at `request_bytes` is within `lane_tie_fraction`
-    // of the best one, or 0 when unprobed. This is the only source of a lane number that is not a
-    // constant carried over from one device.
-    uint32_t best_lanes(uint32_t request_bytes) const;
+    // The largest lane count up to `max_lanes` whose measured rate at `request_bytes` is within
+    // `lane_tie_fraction` of the best one up to there, or 0 when unprobed. This is the only source of a
+    // lane number that is not a constant carried over from one device. The ceiling is the consumer's:
+    // the curve says what the storage returns to so many readers, not what those readers cost the
+    // cores they share with the compute (HardwareProfile::lanes_beside).
+    uint32_t best_lanes(uint32_t request_bytes, uint32_t max_lanes = UINT32_MAX) const;
+
+    // The lane counts every probe draws: 1, 2 and this. Where the rate still climbs at it, the probe
+    // goes on doubling (storage_probe.cpp), and only a reader whose compute is elsewhere reads the
+    // extended points unasked.
+    static constexpr uint32_t lanes_always = 4;
 
     // The share of the best rate a lane count must reach to count as tied with it. 5% is the
     // probe's own resolution: lane counts closer than that swap places between repeated runs.
@@ -371,6 +378,20 @@ struct HardwareProfile {
     // many threads a machine wants is a property of that machine, and the honest way to have it is
     // to ask the machine.
     uint32_t best_threads = 0;
+
+    // The most lanes a reader may take where the experts it reads are computed on these same cores
+    // by `compute_threads`. A read lane is a thread too, and the probe measures the storage alone: on a
+    // phone eight lanes the probe measured faster did not decode faster beside the compute. So such a
+    // reader keeps the curve every probe draws (StorageFacts::lanes_always). `past_always` is the
+    // bound that would let it past those by the cores the compute leaves free, kept unarmed until a
+    // measured run shows more stream readers pay on a machine with cores to spare. Lanes whose experts
+    // compute on a device (a device expert cache's fill) are not bound by this.
+    uint32_t lanes_beside(uint32_t compute_threads, bool past_always = false) const {
+        if (!past_always) return StorageFacts::lanes_always;
+        const uint32_t free_cores =
+            n_cores > 0 && compute_threads > 0 && n_cores > compute_threads ? n_cores - compute_threads : 0;
+        return free_cores > StorageFacts::lanes_always ? free_cores : StorageFacts::lanes_always;
+    }
 
     // Every rung of that sweep, at the rate it reached: the counts the machine was asked about and
     // its answer for each, empty when unmeasured. A count past `best_threads` whose rate is here was

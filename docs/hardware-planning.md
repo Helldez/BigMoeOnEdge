@@ -1088,7 +1088,15 @@ answers 6843 MiB/s.
 
 It measures the rate curve around the model's own expert slice, at one, two and four lanes, taking
 the median of three samples at the size that decides anything, and picks the **largest** lane count
-that reaches within 5% of the best rate. It also measures the price of a **refault** — page-sized
+that reaches within 5% of the best rate. Where four lanes still clear two by more than that band, the
+storage has not shown its knee and the curve goes on doubling, up to the most lanes a plan can give
+the reads (`io_threads_max`). Who reads those extra points is the consumer's question, because the
+probe measures the storage alone and a read lane is a thread too. The stream's `io-threads` read beside
+the compute on the same cores, so they pick over one, two and four lanes, as before
+(`HardwareProfile::lanes_beside`): on a phone eight lanes the probe measured faster did not decode
+faster beside the compute. A bound that would let them past four by the cores the compute leaves free
+is there, unarmed until a measured run shows more stream readers pay. A device expert cache's fill
+lanes read the whole curve, since the experts they bring in are computed on the device. It also measures the price of a **refault** — page-sized
 scattered reads, one lane — because that is what a group left mapped costs once pressure has dropped
 its pages, and it is not a fraction of the sequential rate but a different order of magnitude: 24
 MiB/s against 2800 on this desktop, **116x**. Without that term, leaving a group mapped looks nearly

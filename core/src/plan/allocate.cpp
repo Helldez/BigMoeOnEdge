@@ -273,7 +273,9 @@ void measure_rates(Pricing & c) {
     // the surface's peak — pricing the lane at the peak of the surface instead of at the real
     // request size overstated it by 2.2x on one host.
     c.slice = (uint32_t) c.model.expert_slice_bytes;
-    c.lanes = c.slice ? hw.storage.best_lanes(c.slice) : 0;
+    // The stream's lanes read beside the compute on these cores, so only the lanes every probe draws
+    // (HardwareProfile::lanes_beside).
+    c.lanes = c.slice ? hw.storage.best_lanes(c.slice, hw.lanes_beside(hw.best_threads)) : 0;
     c.stream_mibs = (c.slice && c.lanes) ? hw.storage.rate_at(c.slice, c.lanes) : 0.0;
 
     if (c.host_gibs <= 0.0)

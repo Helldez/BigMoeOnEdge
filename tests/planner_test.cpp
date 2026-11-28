@@ -4949,5 +4949,86 @@ int main() {
         }
     }
 
+    // ── read lanes past the four every probe draws: only for a reader whose compute is elsewhere ──
+    // A curve still climbing at four lanes goes on to eight. The stream's io-threads read beside the
+    // compute on the same cores, so they keep the pick over 1, 2 and 4, many cores or few; a device
+    // expert cache's fill lanes read the whole curve.
+    {
+        const uint32_t slice = (uint32_t) model.expert_slice_bytes;
+        StorageFacts climbing = desktop_storage();
+        climbing.rate_curve = {{slice, 1, 1000.0}, {slice, 2, 1800.0}, {slice, 4, 2600.0}, {slice, 8, 3200.0}};
+        check(climbing.best_lanes(slice) == 8 && climbing.best_lanes(slice, 4) == 4 &&
+                  climbing.best_lanes(slice, 2) == 2,
+              "lanes: the pick reads only the points up to the consumer's ceiling");
+
+        HardwareProfile laptop = desktop();
+        laptop.storage = climbing;
+        laptop.n_cores = 10;
+        laptop.best_threads = 8;
+        HardwareProfile phone_like = laptop;
+        phone_like.n_cores = 8;
+        phone_like.best_threads = 6;
+        HardwareProfile server = laptop;
+        server.n_cores = 32;
+        server.best_threads = 16;
+        HardwareProfile unknown = laptop;
+        unknown.n_cores = 0;
+        unknown.best_threads = 0;
+        check(laptop.lanes_beside(8) == 4 && phone_like.lanes_beside(6) == 4 && server.lanes_beside(16) == 4 &&
+                  unknown.lanes_beside(0) == 4,
+              "lanes: beside the compute, the four every probe draws");
+        check(laptop.lanes_beside(8, true) == 4 && phone_like.lanes_beside(6, true) == 4 &&
+                  server.lanes_beside(16, true) == 16 && unknown.lanes_beside(0, true) == 4,
+              "lanes: the unarmed free-core bound, past four only by the cores the compute leaves");
+
+        for (const auto & c : {std::make_tuple(&laptop, 4, "10 cores, 8 compute threads"),
+                               std::make_tuple(&phone_like, 4, "8 cores, 6 compute threads"),
+                               std::make_tuple(&server, 4, "32 cores, 16 compute threads")}) {
+            const Plan p = plan_run(base_cfg(), *std::get<0>(c), model, PlanRequest{});
+            check(p.config.moe.enabled && p.config.moe.io_threads == std::get<1>(c),
+                  std::string("lanes: the stream's io-threads on a curve best at 8, ") + std::get<2>(c) + ": " +
+                      std::to_string(std::get<1>(c)),
+                  std::to_string(p.config.moe.io_threads));
+        }
+        {
+            PlanRequest pin;
+            pin.pinned = {"threads"};
+            RunConfig typed = base_cfg();
+            typed.n_threads = 30;
+            const Plan p = plan_run(typed, server, model, pin);
+            check(p.config.moe.enabled && p.config.moe.io_threads == 4,
+                  "lanes: typed threads that leave two cores free keep the stream at four",
+                  std::to_string(p.config.moe.io_threads));
+        }
+
+        HardwareProfile uma = unified();
+        uma.host_bandwidth_gibs = 60.0;
+        uma.storage = climbing;
+        uma.n_cores = 10;
+        uma.best_threads = 8;
+        ComputeDevice & acc = uma.devices[1];
+        acc.usable = Tri::Yes;
+        acc.runs_expert_op = Tri::Yes;
+        acc.identity_ok = Tri::Yes;
+        acc.memory_bandwidth_gibs = 120.0;
+        Placement pl;
+        pl.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            pl.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        pl.compute_width = 8192;
+        pl.host_compute_per_token = 256 * KiB;
+        pl.raw_host_compute_bytes = 8192ull * 256 * KiB;
+        pl.n_ctx = 16384;
+        RunConfig long_ctx = base_cfg();
+        long_ctx.n_ctx = 16384;
+        const Plan on = plan_run(long_ctx, uma, model, pl, PlanRequest{}, PlannerPolicy::defaults());
+        const bool moved = on.config.moe.device_cache_mb > 0 && !on.config.moe.enabled && on.config.fallback;
+        check(moved && on.config.moe.device_cache_fill_lanes == 8 && on.config.fallback->moe.io_threads == 4,
+              "lanes: the device cache's fill reads eight, the stream behind it keeps four",
+              moved ? std::to_string(on.config.moe.device_cache_fill_lanes) + " fill lanes, stream " +
+                          std::to_string(on.config.fallback->moe.io_threads)
+                    : std::string("the cache did not move onto the device"));
+    }
+
     return failures ? 1 : 0;
 }

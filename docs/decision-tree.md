@@ -1066,7 +1066,10 @@ flowchart TD
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_io_lanes`
 - condition: `if (want > 0) {`
-- measured → the fewest lanes within 95% of the best rate for an expert slice, from 1 to 8.
+- measured → the most lanes within 95% of the best rate for an expert slice, of the 1, 2 and 4
+  every probe draws (`HardwareProfile::lanes_beside`; its bound past 4 by free cores is unarmed). A
+  device expert cache's fill lanes (`plan.shared-cache`) read the whole curve, up to 8: their experts
+  compute on the device.
 - unmeasured → the default.
 
 #### `plan.direct-io` — Direct I/O

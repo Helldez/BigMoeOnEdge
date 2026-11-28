@@ -50,10 +50,10 @@ double StorageFacts::rate_at(uint32_t request_bytes, uint32_t lanes) const {
     return best ? best->mib_per_s : 0.0;
 }
 
-uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
+uint32_t StorageFacts::best_lanes(uint32_t request_bytes, uint32_t max_lanes) const {
     double best_rate = 0.0;
     for (const RateSample & s : rate_curve)
-        best_rate = std::max(best_rate, rate_at(request_bytes, s.lanes));
+        if (s.lanes <= max_lanes) best_rate = std::max(best_rate, rate_at(request_bytes, s.lanes));
     if (best_rate <= 0.0) return 0;
 
     // The LARGEST lane count that reaches within a few percent of the best rate.
@@ -74,7 +74,7 @@ uint32_t StorageFacts::best_lanes(uint32_t request_bytes) const {
     const double good_enough = best_rate * lane_tie_fraction;
     uint32_t pick = 0;
     for (const RateSample & s : rate_curve) {
-        if (rate_at(request_bytes, s.lanes) < good_enough) continue;
+        if (s.lanes > max_lanes || rate_at(request_bytes, s.lanes) < good_enough) continue;
         if (s.lanes > pick) pick = s.lanes;
     }
     return pick;
