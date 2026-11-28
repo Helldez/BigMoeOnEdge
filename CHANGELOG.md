@@ -52,12 +52,11 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   its misses take. It does so where the record says the cold misses are first touches and the fill
   costs no more than they would, priced at the last warm's measured rate. Not where the cache is lent
   to prompts. The side a load is kept at now leaves out the rate probe's settling window on every side,
-  so a cold cache is not weighed against a warm placement. A load that drafts times no side but the
-  draft's own: on the same card a load with a draft model had timed the host call at 151.6 tok/s
-  against 111.2 without a draft, and every n-gram load after served it, at 71.8 against 117.9.
-  Under any draft the lookup and the warm are now the plain run's, and the saving a warm is weighed by is
-  never priced below the fill's measured rate (one slow fill had turned it off). New gates: G25w (warmed, over the RPC
-  device) and G25h d) (warmed in place) are identical to the resident model
+  so a cold cache is not weighed against a warm placement. The saving a warm is weighed by is never
+  priced below the fill's own measured rate per byte: on the same card one slower fill (1.60 s against
+  0.76-0.92) had turned the warm off for every load after. New gates: G25w (warmed, over the RPC
+  device) and G25h d) (warmed in place) are identical to the resident model; G25e also opens a side under
+  an n-gram draft, which keeps its text and records no rate
   ([hardware-planning.md](docs/hardware-planning.md#a-device-expert-cache-warmed-at-load)).
 - **A streamed model computed on a device that shares the host's memory.** On a unified-memory
   machine a model larger than its memory streamed its experts to the cores. `--auto` now prices,
@@ -219,6 +218,12 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   every background fill held back and its slot set to ones until it lands (debug setting
   `--device-cache-fill-delay-us`): without the fix the gate fails, with it every answer is the model held
   whole on that device.
+- **A load that drafts no longer records its rate for another decision across loads.** A drafting load's
+  tokens per second count the accepted drafts, and were recorded as the rate of whatever side the load
+  served: on a rented 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3
+  for the experts' copy timed without drafts, and every load after turned the copy off and decoded
+  30-40% slower. A load that drafts (`--mtp`, `--ngram`, a draft model) now times only the draft's own
+  side (`--trial-spec`), and the host call's rule waits for a load that does not draft.
 
 ## [0.50.1] - 2026-11-25
 

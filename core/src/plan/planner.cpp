@@ -4714,9 +4714,8 @@ void choose_host_call(Plan & p, const ModelProfile & m, const PlanRequest & req)
     // The rate without it: its own side's, or the cache's, which was timed without it.
     const double off = mk.no_host_call_tps > 0.0 ? mk.no_host_call_tps : mk.device_cache_tps;
     if (off <= 0.0) return;
-    // A load that drafts times no side (untimed_under_draft): the lookup a plain load serves, until a
-    // load without a draft has timed the other.
-    if (c.spec.enabled() && mk.host_call_tps <= 0.0 && !lost(mk.host_call_unviable)) return;
+    // A load that drafts times no side (record_side_rate): the unmeasured side waits for one that does not.
+    if (!lost(mk.host_call_unviable) && mk.host_call_tps <= 0.0 && c.spec.enabled()) return;
     Decision d;
     d.knob = "device-cache-host-call";
     char rates[160];
@@ -5577,33 +5576,6 @@ Plan plan_run_placed(const RunConfig & base,
                      const PlanRequest & req,
                      const PlannerPolicy & pol);
 
-// ── no side across loads timed under a draft the caller set ──
-// A load that drafts decodes 1 + draft positions a step and keeps the tokens its drafts win, so the rate
-// it decodes at is the draft's as much as any side's, and a side timed on it is read against the same
-// side timed on loads without one. On a rented 32 GB card a load with a draft model timed the device
-// cache's lookup inside the graph at 151.6 tok/s, against 111.2 for the cache timed without a draft;
-// every load after served that lookup, an n-gram one too, at 71.8 tok/s where the plain lookup had
-// decoded 117.9. So under a draft the caller set, each decision serves what it decided and times
-// nothing; its sides are timed by the loads that do not draft. The draft's own trial (plan.spec) arms
-// a draft only on the load that times it, and no other side then.
-void untimed_under_draft(Plan & p) {
-    KnobTrialConfig & t = p.config.trial;
-    // dt:plan.draft-untimed
-    if (!p.config.spec.enabled() || t.spec_side >= 0) return;
-    if (t.device_tier < 0 && t.width_side < 0 && t.shared_device_side < 0 && t.host_call_side < 0) return;
-    t.device_tier = t.width_side = t.shared_device_side = t.host_call_side = -1;
-    Decision d;
-    d.knob = "knob-trial";
-    d.value = "none";
-    d.source = Source::Policy;
-    d.brief = "This load drafts, so it times no other setting: a load without a draft does.";
-    d.reason = std::string("the ") + p.config.spec.source_name() +
-               " draft makes a step decode several positions and keeps what the drafts win, so what this load "
-               "decodes at is the draft's rate as much as a setting's; each decision above serves as it decided, and "
-               "the loads that do not draft time their sides";
-    p.decisions.push_back(std::move(d));
-}
-
 } // namespace
 
 Plan plan_run(const RunConfig & base,
@@ -5614,7 +5586,6 @@ Plan plan_run(const RunConfig & base,
               const PlannerPolicy & pol) {
     Plan p = plan_run_placed(base, hw, model, projected, req, pol);
     choose_host_call(p, model, req);
-    untimed_under_draft(p);
     choose_cache_warm(p, hw, model, req, pol);
     choose_spec(p, base, hw, model, projected, req, pol);
     choose_record_unstreamed(p, model, req);

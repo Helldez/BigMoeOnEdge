@@ -565,13 +565,15 @@ side but the rate the next plan prices a warm at
 times, it is kept at what it decoded less the rate probe's settling window, so both sides are compared once
 their cache is warm.
 
-A load that drafts times no side but the draft's own (`untimed_under_draft`, and the session refuses a
-side set by hand on such a load). A step under a draft decodes 1 + draft positions and keeps what the
-drafts win, so its rate is the draft's as much as the side's. On a rented 32 GB card a load with a draft
-model timed the device cache's lookup inside the graph at 151.6 tok/s, against 111.2 for the cache
-timed without a draft, and every load after served that lookup: an n-gram load decoded at 71.8 where the
-plain lookup had decoded 117.9. Under a draft the caller set, each decision serves as it decided, and
-the loads that do not draft time its sides.
+A load that drafts times no side but the draft's own (`spec_tps`, `drafter_tps`). Its tokens per second
+count the drafts its verifies accepted, so its rate compares with no side timed without them: on a rented
+24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3 for the experts' copy,
+and every load after turned the copy off and decoded 30-40% slower. The session does not time it
+(`record_side_rate` keeps nothing else from a drafting load), and the host call's rule does not ask such a
+load to time its unmeasured side. The device tier's, the width's and the shared-memory device's rules
+never serve a side in order to time it: they serve the side measured or priced faster and time that, so a
+drafting load serves what a load without drafts would. The side stays named on such a load, untimed, so a
+failed open still counts against it.
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one

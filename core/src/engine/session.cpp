@@ -2512,12 +2512,11 @@ void Session::Impl::arm_trials() {
     }
     trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0 ||
                   t.spec_side >= 0;
-    // A load that drafts, other than the one timing the draft's own side, times no side: what it decodes
-    // at is the draft's rate as much as the side's, and the side's other half was timed without a draft
-    // (the plan's untimed_under_draft says why; this keeps a side set by hand from being recorded too).
+    // A drafting load's rate counts the accepted drafts: it compares with no side timed without them
+    // (record_side_rate), so it times none but the draft's own.
     if (trials.rate && cfg.spec.enabled() && t.spec_side < 0) {
+        log_printf(LogLevel::Info, "knob trial: this load drafts, so its decode rate is not timed for a side");
         trials.rate = false;
-        log_printf(LogLevel::Info, "knob trial: no side is timed on a load that drafts (%s)", cfg.spec.source_name());
     }
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
@@ -2651,7 +2650,7 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     if (settling && !r.settling()) log_printf(LogLevel::Info, "knob trial: timing the decode %s", what);
     if (!r.done()) return;
     const double tps = r.tokens_per_second();
-    record_side_rate(cfg.trial, tps, trials.result);
+    record_side_rate(cfg.trial, tps, trials.result, cfg.spec.enabled());
     if (mtp_drafted > 0)
         record_side_accept(cfg.trial, (double) mtp_accepted / (double) mtp_drafted, cfg.spec.draft_max, trials.result);
     log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s, the median of %d windows", tps, what, r.windows());
@@ -2720,7 +2719,7 @@ void Session::Impl::note_request_mix(const RunSummary & sum) {
     const double served_seconds = trials.served_seconds - trials.settle_seconds;
     if (trials.rate && trials.rate_timed && served_seconds > 0.0 && served_tokens > 0.0) {
         const double tps = served_tokens / served_seconds;
-        record_side_rate(cfg.trial, tps, r);
+        record_side_rate(cfg.trial, tps, r, cfg.spec.enabled());
         if (!trials.served_rate_said) {
             trials.served_rate_said = true;
             log_printf(LogLevel::Info,

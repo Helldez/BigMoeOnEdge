@@ -301,8 +301,15 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
 // The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side,
 // shared_device_side or spec_side), put where a plan reads it. One decision per load, in that
 // order, so a rate never answers two questions measured under one placement. Nothing when `trial`
-// names no side.
-void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);
+// names no side, and nothing for any side but the draft's own (spec_side) when the load drafted
+// (`drafted`: SpecConfig::enabled): a drafting load's tokens per second count the accepted drafts, so
+// its rate compares with no side timed without them. On a rented 24 GB card an n-gram load recorded
+// 151.6 tok/s for the file's mapping against 105.3 for the experts' copy, and every load after turned
+// the copy off and decoded 30-40% slower.
+void record_side_rate(const KnobTrialConfig & trial,
+                      double tokens_per_second,
+                      MeasuredKnobs & rec,
+                      bool drafted = false);
 // A draft side's acceptance (the share of drafted tokens confirmed) and the width it drafted at, beside
 // its rate: what the plan prices that draft's other widths from. Nothing for a side without a draft.
 void record_side_accept(const KnobTrialConfig & trial, double accepted_share, int draft, MeasuredKnobs & rec);

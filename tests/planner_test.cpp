@@ -4514,6 +4514,30 @@ int main() {
                           std::string::npos,
                   "device tier, the cache measured under the fitter's price: the fitter's placement is served",
                   e ? e->reason : "no decision");
+            // A load that drafts serves the side a load without drafts would: these rules serve their
+            // measured or priced side and only time it, so drafting changes nothing in what is served (the
+            // session records no rate from it, record_side_rate). The side stays named: a failed open still
+            // counts against it (record_side_unviable).
+            for (const MeasuredKnobs & k : {MeasuredKnobs{}, once}) {
+                ModelProfile mm = model;
+                mm.knobs = k;
+                RunConfig drafting = base_cfg();
+                drafting.spec.source = DraftSource::ngram;
+                PlanRequest typed;
+                typed.pinned = {"spec"};
+                const Plan plain = plan_run(base_cfg(), slow_cores, mm, half, typed, PlannerPolicy::defaults());
+                const Plan dr = plan_run(drafting, slow_cores, mm, half, typed, PlannerPolicy::defaults());
+                check(dr.config.spec.is_ngram() && dr.config.moe.device_cache_mb == plain.config.moe.device_cache_mb &&
+                          dr.config.buft_overrides.size() == plain.config.buft_overrides.size() &&
+                          dr.config.n_ubatch == plain.config.n_ubatch &&
+                          dr.config.n_gpu_layers == plain.config.n_gpu_layers &&
+                          dr.config.trial.device_tier == plain.config.trial.device_tier &&
+                          dr.config.trial.width_side == plain.config.trial.width_side,
+                      std::string("device tier, a drafting load: the side a load without drafts would serve (") +
+                          (k.device_cache_tps > 0.0 ? "the cache timed" : "nothing timed") + ")",
+                      std::to_string(dr.config.moe.device_cache_mb) + " vs " +
+                          std::to_string(plain.config.moe.device_cache_mb));
+            }
             check(validate(second.config).ok, "device tier, second load: a valid config",
                   validate(second.config).error);
             // The placement is priced at half its ceiling (6.7 tok/s), what such placements were measured
@@ -4580,21 +4604,6 @@ int main() {
                           std::string("host call, under a ") + drafted.spec.source_name() +
                               " draft: the measured side serves");
                 }
-            }
-            // Nothing measured, under a draft the caller set: the device tier serves what it priced, untimed,
-            // and the plan says why.
-            {
-                RunConfig drafted = base_cfg();
-                drafted.spec.source = DraftSource::ngram;
-                drafted.spec.draft_max = 3;
-                PlanRequest typed;
-                typed.pinned = {"spec"};
-                const Plan dr = plan_run(drafted, slow_cores, model, half, typed, PlannerPolicy::defaults());
-                const Decision * kt = find(dr, "knob-trial");
-                check(dr.config.moe.device_cache_mb == tier.config.moe.device_cache_mb &&
-                          !names_side(dr.config.trial) && kt && kt->value == "none",
-                      "device tier, under a draft: served as priced, no side timed",
-                      kt ? kt->reason : "no knob-trial decision");
             }
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;

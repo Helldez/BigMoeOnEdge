@@ -476,7 +476,7 @@ int main() {
             check(parse_measured_knobs(format_measured_knobs({dh}), dback, err) && dback.size() == 1 &&
                       dback[0].spec_unviable == 1,
                   "record: the draft head's failed open reads back");
-            record_side_rate(drafting, 36.0, dh);
+            record_side_rate(drafting, 36.0, dh, /*drafted*/ true); // the draft's own side, drafting
             KnobTrialConfig plain;
             plain.spec_side = 0;
             record_side_rate(plain, 30.0, dh);
@@ -486,6 +486,31 @@ int main() {
             check(parse_measured_knobs(format_measured_knobs({dh}), dback, err) && dback.size() == 1 &&
                       std::fabs(dback[0].spec_tps - 36.0) < 1e-9 && std::fabs(dback[0].no_spec_tps - 30.0) < 1e-9,
                   "record: the draft head's rates read back as written");
+            // A load that drafts records no other side: its rate counts the accepted drafts.
+            {
+                MeasuredKnobs before;
+                before.device_cache_tps = 40.0;
+                before.host_call_tps = 41.0;
+                before.wide_decode_tps = 42.0;
+                before.shared_device_tps = 43.0;
+                MeasuredKnobs drafted = before;
+                KnobTrialConfig sides[5];
+                sides[0].device_tier = 0;
+                sides[1].host_call_side = 0;
+                sides[2].width_side = 0;
+                sides[2].width_narrow = 512;
+                sides[3].shared_device_side = 0;
+                sides[4].host_call_side = 1;
+                for (const KnobTrialConfig & side : sides)
+                    record_side_rate(side, 151.6, drafted, /*drafted*/ true);
+                check(
+                    drafted.device_cache_tps == 40.0 && drafted.no_device_cache_tps == 0.0 &&
+                        drafted.host_call_tps == 41.0 && drafted.no_host_call_tps == 0.0 &&
+                        drafted.wide_decode_tps == 42.0 && drafted.narrow_decode_tps == 0.0 &&
+                        drafted.shared_device_tps == 43.0 && drafted.no_shared_device_tps == 0.0 &&
+                        drafted.verdicts() == before.verdicts(),
+                    "record: a drafting load leaves the device tier's, host call's, width's and shared device's rates");
+            }
             std::vector<MeasuredKnobs> kept = {dback[0]};
             MeasuredKnobs later;
             later.hardware = a.hardware;

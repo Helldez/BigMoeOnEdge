@@ -560,7 +560,6 @@ flowchart TD
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
     plan_record_unstreamed["<b>plan.record-unstreamed</b><br/>A run that does not stream records its routing where no record exists"]
     plan_host_call["<b>plan.host-call</b><br/>A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]"]
-    plan_draft_untimed["<b>plan.draft-untimed</b><br/>No side across loads timed under a draft the caller set"]
     plan_cache_warm["<b>plan.cache-warm</b><br/>A device expert cache warmed at load from the model's routing record [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
@@ -632,8 +631,7 @@ flowchart TD
     plan_held_whole -.-> plan_shared_cache
     plan_shared_cache -.-> plan_record_unstreamed
     plan_record_unstreamed -.-> plan_host_call
-    plan_host_call -.-> plan_draft_untimed
-    plan_draft_untimed -.-> plan_cache_warm
+    plan_host_call -.-> plan_cache_warm
     plan_cache_warm -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
@@ -837,18 +835,9 @@ flowchart TD
   `device-cache-host-call` nor `trial-host-call` is pinned and no other cross-load side is timed.
 - The cache's side needs a rate first (`no_host_call_tps`, or `device_cache_tps`, timed without it).
 - Loads with it failed `unviable_max` times (`host_call_unviable`) → off.
-- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it. Under a draft the
-  caller set → nothing: the lookup a plain load serves, until a load without a draft times it.
+- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it; a load that drafts
+  (`spec.enabled()`) is left alone, since it times no side.
 - Both measured → the faster serves, and nothing is timed again.
-
-#### `plan.draft-untimed` — No side across loads timed under a draft the caller set
-- parent: —
-- code: `core/src/plan/planner.cpp` · `untimed_under_draft`
-- condition: `if (!p.config.spec.enabled() || t.spec_side >= 0) return;`
-- Asked by `plan_run` after `plan.host-call`. A draft armed (the caller's) and not the draft's own
-  trial, with a device-tier, width, shared-device or host-call side named → every side cleared, and a
-  `knob-trial` decision says why: each decision serves as it decided, untimed, and the loads that do
-  not draft time its sides. The session refuses a side set by hand on such a load too (`open.trials`).
 
 #### `plan.cache-warm` — A device expert cache warmed at load from the model's routing record [EXPERIMENTAL]
 - parent: —
@@ -1913,7 +1902,7 @@ flowchart TD
   1. threads (the incumbent and the candidates);
   2. overlap (both sides, when the hook exists);
   3. rate, timing one side (`device_tier`, `width_side`, `shared_device_side`, `host_call_side` or
-     `spec_side`); on a load that drafts, only `spec_side` (`plan.draft-untimed`).
+     `spec_side`); on a load that drafts, only `spec_side` (`record_side_rate`).
 - A cost probe always measures the plain decode cost (`req.trial`).
 - The side a load times is kept at what it decoded over its turns, less the rate probe's settling
   window, on every side alike: a side is compared once its cache is warm, not on the first touches of a

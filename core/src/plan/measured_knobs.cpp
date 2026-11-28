@@ -576,8 +576,9 @@ int * spec_unviable(int side, MeasuredKnobs & rec) {
 }
 } // namespace
 
-void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec) {
+void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec, bool drafted) {
     if (!(tokens_per_second > 0.0)) return;
+    if (drafted && trial.spec_side < 0) return;
     if (trial.device_tier >= 0) {
         (trial.device_tier == 1 ? rec.device_cache_tps : rec.no_device_cache_tps) = tokens_per_second;
         (trial.device_tier == 1 ? rec.device_cache_unviable : rec.no_device_cache_unviable) = 0;
