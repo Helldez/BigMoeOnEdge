@@ -23,6 +23,11 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   A long prompt's experts outside the cache are filled on the same lanes: a 3022-token prompt prefilled
   at 268 tok/s on Qwen3.6-35B (59 before, 538 streamed with the prefill device); the plan does not weigh
   the prefill yet.
+- **The device cache reads ahead for a draft's verify batch too.** The next layer's experts were read
+  ahead only for one-token batches, so under `--mtp` (2-4 tokens per decode) nothing was. Every batch the
+  cache serves now predicts each token's experts and fills their union, best rank first. On a 16 GB laptop
+  with Qwen3.6-35B the small-batch hit rate went from 92.3 to 94.0% (draft 1) and from 91.3 to 93.7%
+  (draft 3), the time spent filling misses fell by a fifth to a quarter, and the text is identical.
 - **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
   `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
   ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.

@@ -606,7 +606,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("device-cache-read-ahead", "Device cache read-ahead", G::Cache, L::Experimental,
                           "With a device expert cache, the experts per token of the next layer, "
                           "named by its router on this layer's input, that are brought into the cache while this "
-                          "layer computes. 0 is off.");
+                          "layer computes, for every batch the cache serves (a draft's verify batch too). 0 is off.");
         d.value_hint = "N";
         bounds(d, 0, MoeStreamConfig::device_cache_read_ahead_max, "experts");
         special(d, "0", "off");
