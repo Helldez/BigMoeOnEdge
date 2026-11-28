@@ -505,7 +505,8 @@ flowchart TD
 - code: `server/request_sampling.cpp` · `parse_request_sampling`
 - condition: `if (any) turn.sampling = r;`
 - Only a request that sends a sampling field gets an override. The session applies it in
-  `req.sampler`, and ignores it while speculation is configured.
+  `req.sampler`; one that moves the choice turns the draft off for its conversation
+  (`req.sampled-spec-off`).
 
 ## plan — the hardware planner (`--auto`)
 
@@ -581,7 +582,7 @@ flowchart TD
     plan_overlap_prompts["<b>plan.overlap.prompts</b><br/>Overlap would keep prompts off the device"]
     plan_threads["<b>plan.threads</b><br/>Threads"]
     plan_threads_trial["<b>plan.threads.trial</b><br/>Time other thread counts on this load"]
-    plan_spec["<b>plan.spec</b><br/>A model held whole drafts with its own MTP head"]
+    plan_spec["<b>plan.spec</b><br/>A model drafts where a verify's reads stay in memory"]
     plan_spec_sides["<b>plan.spec.sides</b><br/>Draft or not: lost, measured, unmeasured"]
     plan_give_way -->|"cache under one cycle"| plan_give_way_checkpoints
     plan_give_way -->|"still under one cycle"| plan_give_way_ctx
@@ -929,8 +930,9 @@ flowchart TD
 - code: `core/src/plan/planner.cpp` · `declines_residency`
 - condition: `if (s.placement.fitted && s.host_layers == 0) {`
 - condition: `if (s.p.regime == Regime::Fits) {`
-- Every expert layer is on devices, or the model fits → streaming is declined. Four stages then run
-  and end the plan: `plan.shared`, `plan.devices`, `plan.threads` and `plan.spec`.
+- Every expert layer is on devices, or the model fits → streaming is declined. Three stages then run
+  and end the plan: `plan.shared`, `plan.devices` and `plan.threads`. `plan.spec` asks after it, on
+  every plan.
 
 #### `plan.shared` — A shared-memory device computes the whole resident model
 - parent: `plan.resident`
@@ -1150,14 +1152,20 @@ flowchart TD
 - Up to 2 candidates nearest the incumbent, from the core classes' running sums. Candidates the
   sweep already answered are left out.
 
-#### `plan.spec` — A model held whole drafts with its own MTP head
+#### `plan.spec` — A model drafts where a verify's reads stay in memory
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_spec`
-- condition: `if (!s.model.has_mtp || !s.req.measure_knobs) return;`
-- Reached only from `plan.resident`. Asked where the model carries an MTP block, the front-end keeps
-  records, `spec`, `mtp-head` and `trial-spec` are not pinned, nothing streams, no draft is armed,
-  and this load times no other side and checks no device's answers. Otherwise → nothing.
-- An armed head that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
+- condition: `if (source == DraftSource::none || !req.measure_knobs) return;`
+- condition: `if (!verify_reads_held(c, m, draft, where)) return;`
+- Asked by `plan_run` on the plan as it will serve, after `plan.host-call`. The model has a draft
+  (`draft_source`: its own MTP head; a drafter's file, `ModelProfile::draft_file_bytes`, once this
+  engine opens one), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are not
+  pinned, no draft is armed, and this load times no other side and checks no device's answers.
+  Otherwise → nothing.
+- `verify_reads_held`: the model held whole, or a device expert cache of at least `1 + draft` token
+  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → nothing.
+- The width is `PlannerPolicy::draft_tokens` (3), or a typed `--draft`.
+- An armed draft that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
   says why.
 
 #### `plan.spec.sides` — Draft or not: lost, measured, unmeasured
@@ -1168,11 +1176,11 @@ flowchart TD
 - condition: `if (on > 0.0 && off > 0.0) {`
 - condition: `if (on <= 0.0) {`
 - condition: `if (lost(mk.no_spec_unviable)) {`
-- The head failed to open twice → off.
-- Both sides timed → the head only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
-- The head not timed → `spec = mtp`, `trial.spec_side = 1`: this load drafts and times it.
-- The head timed, not the decode without it → `trial.spec_side = 0`, unless loads without it failed
-  twice (→ the head).
+- The draft failed to open twice → off.
+- Both sides timed → the draft only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
+- The draft not timed → `spec = mtp`, `trial.spec_side = 1`: this load drafts and times it.
+- The draft timed, not the decode without it → `trial.spec_side = 0`, unless loads without it failed
+  twice (→ the draft).
 
 ## open — loading a model
 

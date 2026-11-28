@@ -151,11 +151,17 @@ struct PlannerPolicy {
     // "more" for a difference inside its own repeatability is how a rationale starts being read as
     // noise. Measured 19 against 19 on a phone, which is not a finding.
     float min_backend_win = 0.10f;
-    // How much faster a model held whole must decode with its own MTP head drafting before the head is
-    // kept, as a fraction. The two rates are two loads' own, so the same tenth the speed margin above
-    // gives a probe's repeatability; and the head is not free when it does not win: its draft context
-    // holds memory beside the model, and a conversation that drafts decodes greedily.
+    // How much faster a model must decode with a draft before the draft is kept, as a fraction. The two
+    // rates are two loads' own, so the same tenth the speed margin above gives a probe's repeatability;
+    // and a draft is not free when it does not win: its context holds memory beside the model, and a
+    // conversation that drafts decodes greedily.
     float min_draft_win = 0.10f;
+    // Tokens a plan-armed draft proposes per verify (SpecConfig::draft_max), where the caller typed no
+    // width. A verify computes 1 + this many positions and reads the union of their experts, so a wider
+    // draft is paid in reads as well as compute. Measured on a 16 GB unified-memory laptop serving
+    // Qwen3.6-35B from a device expert cache: 3 decoded fastest with the model's own head and with a
+    // separate drafter, and 8 was slower than 3.
+    int draft_tokens = 3;
 
     // How much more memory a shared-memory device must report free than it did when it failed to open
     // this model whole (MeasuredKnobs::shared_device_unviable_free_mib) before the plan names it again,

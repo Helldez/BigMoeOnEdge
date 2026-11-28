@@ -225,6 +225,11 @@ struct ModelProfile {
     // streaming however large it is. No size threshold or architecture name is involved.
     bool tied_output_head = false;
     bool has_mtp = false; // a trained multi-token-prediction block is present
+    // Bytes of a separate draft model the front-end found for this one (a drafter file beside it), 0 for
+    // none. Not read from this file. The plan's draft rule asks whether the model has a draft at all
+    // (planner.cpp, draft_source): today only its own head answers, and a drafter's file joins it there
+    // once this engine can open one, so the rule itself names no kind of draft.
+    uint64_t draft_file_bytes = 0;
 
     // This model's own hit-rate curve, from a routing trace it recorded on an earlier run
     // (attach_routing in bmoe/routing.h). Not read from the file: a front-end that kept a trace hands

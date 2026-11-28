@@ -4270,99 +4270,6 @@ void choose_threads_unmeasured(Planning & s) {
 
 namespace {
 
-// Whether a model held whole drafts with its own MTP block, decided across loads like the shared-memory
-// device (MeasuredKnobs::spec_tps). Only where nothing streams: streamed, a verify widens the experts a
-// step reads, and on a 16 GB laptop that took a token's reads from 32 to 51 MiB and the draft lost. Held
-// whole, the sign is the machine's: the head paid 18% on a 24 GB card with the model resident, and on
-// the cores alone, where a verify reads the union of the drafted tokens' experts at the memory's own
-// rate, it was never measured. So the loads measure it, and the head is kept only on a verdict.
-void choose_spec(Planning & s) {
-    // dt:plan.spec
-    if (!s.model.has_mtp || !s.req.measure_knobs) return;
-    for (const char * knob : {"spec", "mtp-head", "trial-spec"})
-        if (s.req.is_pinned(knob)) return;
-    RunConfig & c = s.p.config;
-    if (c.spec.enabled() || c.moe.enabled) return;
-    // One decision is timed a load: another one this plan left pending goes first, and so does a device
-    // whose answers the load compares, which opens the model a second time on the cores.
-    const KnobTrialConfig & pending = c.trial;
-    if (names_side(pending) || !pending.answer_device.empty()) return;
-    const char * knob = "spec";
-    const MeasuredKnobs & mk = s.model.knobs;
-    const double on = mk.spec_tps, off = mk.no_spec_tps;
-    const double m = (double) s.pol.min_draft_win;
-    const std::string margin = u64s((uint64_t) (m * 100.0 + 0.5)) + "%";
-    char measured[128];
-    std::snprintf(measured, sizeof(measured), "%.2f tok/s with the head drafting against %.2f without", on, off);
-    const std::string held = "the model is held whole and carries its own MTP block";
-
-    // The head armed as the configuration has it, or nothing where validate() refuses it there: the
-    // plan never hands a load a configuration that cannot open.
-    std::string refused;
-    const auto arm = [&](int side) -> bool {
-        RunConfig armed = c;
-        armed.spec.source = DraftSource::mtp;
-        armed.trial.spec_side = side;
-        const ValidationResult v = validate(armed);
-        if (!v.ok) {
-            refused = v.error;
-            return false;
-        }
-        c = armed;
-        return true;
-    };
-    const auto without = [&](Source src, const std::string & brief, const std::string & reason) {
-        s.note(knob, "off", src, brief, held + "; " + reason);
-    };
-    const auto with_head = [&](Source src, const std::string & brief, const std::string & reason, int side) {
-        if (arm(side))
-            s.note(knob, "mtp", src, brief, held + "; " + reason);
-        else
-            without(Source::Derived, "No draft: this configuration cannot draft.",
-                    "the head could not be armed here: " + refused);
-    };
-
-    // dt:plan.spec.sides
-    if (lost(mk.spec_unviable)) {
-        without(Source::Measured, "No draft: loads with the model's head drafting failed here.",
-                "loads of this model with its head drafting failed on this machine");
-        return;
-    }
-    if (on > 0.0 && off > 0.0) {
-        if (on > off * (1.0 + m))
-            with_head(Source::Measured, "The model drafts with its own head, which decodes faster here.",
-                      std::string(measured) + ", past the " + margin + " margin", -1);
-        else
-            without(Source::Measured, "No draft: the model's head does not decode faster here.",
-                    std::string(measured) + ", inside the " + margin + " margin");
-        return;
-    }
-    // A side not yet timed: this load serves it and times it. The head first, since without it is the
-    // decode every load before this rule ran; its failure to open reopens without it (the server's
-    // other side), and counts.
-    if (on <= 0.0) {
-        with_head(Source::Derived, "This load drafts with the model's own head, and times it.",
-                  "no load has timed it on this machine; the next times the decode without it, and the plan after "
-                  "keeps the head only where it decodes faster by the " +
-                      margin + " margin",
-                  1);
-        return;
-    }
-    if (lost(mk.no_spec_unviable)) {
-        with_head(Source::Measured, "The model drafts with its own head: loads without it failed here.",
-                  "loads of this model without a draft failed on this machine", -1);
-        return;
-    }
-    char timed[64];
-    std::snprintf(timed, sizeof(timed), "%.2f tok/s", on);
-    without(Source::Derived, "This load decodes without a draft, and times it.",
-            "the head was timed at " + std::string(timed) +
-                " here; this load times the decode without it, and the plan after keeps the head only "
-                "where it decodes faster by the " +
-                margin + " margin");
-    c.trial.spec_side = 0;
-}
-
 Plan plan_from(const RunConfig & base,
                const HardwareProfile & hw,
                const ModelProfile & model,
@@ -4431,7 +4338,6 @@ Plan plan_once(const RunConfig & base,
         // layers on 4 threads of a 32-core box, at 26 tok/s where 16 threads decoded at 47.5.
         leave_out_failed_devices(s);
         choose_threads(s);
-        choose_spec(s);
         return p;
     }
 
@@ -4774,6 +4680,152 @@ void choose_host_call(Plan & p, const ModelProfile & m, const PlanRequest & req)
     p.decisions.push_back(d);
 }
 
+// ── a draft, decided across loads where the verify's reads stay in memory ──
+// The draft this model has, or none. Only the model's own head today; a separate drafter (its file's
+// bytes in ModelProfile::draft_file_bytes) is a source this engine cannot open yet, and adds its own
+// case here when it can, so the rule below asks "is there a draft" and never which kind.
+DraftSource draft_source(const ModelProfile & m) {
+    return m.has_mtp ? DraftSource::mtp : DraftSource::none;
+}
+
+// The value a decision names a draft by (the `spec` row's own, params.cpp) and what it is, in words.
+const char * draft_value(DraftSource s) {
+    return s == DraftSource::mtp ? "mtp" : "off";
+}
+const char * draft_words(DraftSource s) {
+    return s == DraftSource::mtp ? "its own MTP head" : "no draft";
+}
+
+// Whether the side this configuration serves keeps a verify's reads in memory. A verify computes
+// 1 + draft positions in one pass and reads the union of their experts, more than a token reads. Held
+// whole, every expert is in memory. From a device expert cache, the cache has to hold that union, which
+// is at most 1 + draft token cycles; under it a verify evicts what the same pass still needs. Streamed
+// from the file it is not: on a 16 GB laptop a verify took a token's reads from 32 to 51 MiB and the
+// draft lost. The facts are the configuration's and the model's, so it reads the same on any machine.
+bool verify_reads_held(const RunConfig & c, const ModelProfile & m, int draft, std::string & why) {
+    const uint64_t cache = (uint64_t) std::max(0, c.moe.device_cache_mb) << 20;
+    if (cache > 0) {
+        const uint64_t need = (uint64_t) (1 + std::max(0, draft)) * m.token_cycle_bytes;
+        why = "a " + u64s(mib(cache)) + " MiB device expert cache " +
+              (need > 0 && cache >= need ? "holds" : "does not hold") + " a verify's experts (" +
+              u64s((uint64_t) (1 + draft)) + " token cycles, " + u64s(mib(need)) + " MiB at most)";
+        return need > 0 && cache >= need;
+    }
+    why = c.moe.enabled ? "the model streams: a verify widens the experts a step reads from the file"
+                        : "the model is held whole";
+    return !c.moe.enabled;
+}
+
+// Whether a model drafts, decided across loads like the shared-memory device (MeasuredKnobs::spec_tps).
+// Asked on the plan as it will serve, so it covers every side whose verify reads stay in memory
+// (verify_reads_held): the model held whole, or served from a device expert cache that holds a verify,
+// on a device that shares the host's memory as on a card with memory of its own. The sign is the
+// machine's: the head paid 18% on a 24 GB card with the model resident, and on a 16 GB laptop serving
+// from a device expert cache 43% (24.2 -> 34.6 tok/s at a draft of 3). So the loads measure it, and the
+// draft is kept only on a verdict. One decision is timed a load: any other this plan left pending goes
+// first, and so does a device whose answers the load compares.
+void choose_spec(Plan & p, const ModelProfile & m, const PlanRequest & req, const PlannerPolicy & pol) {
+    // dt:plan.spec
+    const DraftSource source = draft_source(m);
+    if (source == DraftSource::none || !req.measure_knobs) return;
+    for (const char * knob : {"spec", "mtp-head", "trial-spec"})
+        if (req.is_pinned(knob)) return;
+    for (const Decision & x : p.decisions)
+        if (x.knob == "spec") return; // a plan made again from this one already asked
+    RunConfig & c = p.config;
+    if (c.spec.enabled()) return;
+    const KnobTrialConfig & pending = c.trial;
+    if (names_side(pending) || !pending.answer_device.empty()) return;
+    const int draft = req.is_pinned("draft") ? c.spec.draft_max : pol.draft_tokens;
+    std::string where;
+    if (!verify_reads_held(c, m, draft, where)) return;
+    const char * knob = "spec";
+    const MeasuredKnobs & mk = m.knobs;
+    const double on = mk.spec_tps, off = mk.no_spec_tps;
+    const double margin_f = (double) pol.min_draft_win;
+    const std::string margin = u64s((uint64_t) (margin_f * 100.0 + 0.5)) + "%";
+    char measured[128];
+    std::snprintf(measured, sizeof(measured), "%.2f tok/s with the draft against %.2f without", on, off);
+    const std::string held = where + ", and the model drafts with " + draft_words(source);
+
+    // The draft armed as the configuration has it, or nothing where validate() refuses it there: the
+    // plan never hands a load a configuration that cannot open.
+    std::string refused;
+    const auto arm = [&](int side) -> bool {
+        RunConfig armed = c;
+        armed.spec.source = source;
+        armed.spec.draft_max = draft;
+        armed.trial.spec_side = side;
+        const ValidationResult v = validate(armed);
+        if (!v.ok) {
+            refused = v.error;
+            return false;
+        }
+        c = armed;
+        return true;
+    };
+    const auto note = [&](std::string value, Source src, std::string brief, const std::string & reason) {
+        Decision d;
+        d.knob = knob;
+        d.value = std::move(value);
+        d.source = src;
+        d.brief = std::move(brief);
+        d.reason = held + "; " + reason;
+        p.decisions.push_back(std::move(d));
+    };
+    const auto without = [&](Source src, const std::string & brief, const std::string & reason) {
+        note("off", src, brief, reason);
+    };
+    const auto with_draft = [&](Source src, const std::string & brief, const std::string & reason, int side) {
+        if (arm(side))
+            note(draft_value(source), src, brief,
+                 reason + "; " + u64s((uint64_t) draft) + " tokens drafted per verify");
+        else
+            without(Source::Derived, "No draft: this configuration cannot draft.",
+                    "the draft could not be armed here: " + refused);
+    };
+
+    // dt:plan.spec.sides
+    if (lost(mk.spec_unviable)) {
+        without(Source::Measured, "No draft: loads that drafted failed here.",
+                "loads of this model with a draft failed on this machine");
+        return;
+    }
+    if (on > 0.0 && off > 0.0) {
+        if (on > off * (1.0 + margin_f))
+            with_draft(Source::Measured, "The model drafts, which decodes faster here.",
+                       std::string(measured) + ", past the " + margin + " margin", -1);
+        else
+            without(Source::Measured, "No draft: drafting does not decode faster here.",
+                    std::string(measured) + ", inside the " + margin + " margin");
+        return;
+    }
+    // A side not yet timed: this load serves it and times it. The draft first, since without it is the
+    // decode every load before this rule ran; its failure to open reopens without it (the server's
+    // other side), and counts.
+    if (on <= 0.0) {
+        with_draft(Source::Derived, "This load drafts, and times it.",
+                   "no load has timed it on this machine; the next times the decode without it, and the plan "
+                   "after keeps the draft only where it decodes faster by the " +
+                       margin + " margin",
+                   1);
+        return;
+    }
+    if (lost(mk.no_spec_unviable)) {
+        with_draft(Source::Measured, "The model drafts: loads without a draft failed here.",
+                   "loads of this model without a draft failed on this machine", -1);
+        return;
+    }
+    char timed[64];
+    std::snprintf(timed, sizeof(timed), "%.2f tok/s", on);
+    without(Source::Derived, "This load decodes without a draft, and times it.",
+            "the draft was timed at " + std::string(timed) +
+                " here; this load times the decode without it, and the plan after keeps the draft only "
+                "where it decodes faster by the " +
+                margin + " margin");
+    c.trial.spec_side = 0;
+}
+
 Plan plan_run_placed(const RunConfig & base,
                      const HardwareProfile & hw,
                      const ModelProfile & model,
@@ -4791,6 +4843,7 @@ Plan plan_run(const RunConfig & base,
               const PlannerPolicy & pol) {
     Plan p = plan_run_placed(base, hw, model, projected, req, pol);
     choose_host_call(p, model, req);
+    choose_spec(p, model, req, pol);
     return p;
 }
 
