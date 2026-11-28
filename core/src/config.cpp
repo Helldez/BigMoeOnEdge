@@ -138,14 +138,17 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.trial.shared_device_side >= 0 && (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0))
         return fail("{trial-shared-device} and {trial-device-cache} or {trial-width} each time a load's decode: one at "
                     "a time");
-    if (cfg.trial.spec_side < -1 || cfg.trial.spec_side > 1)
-        return fail("{trial-spec} is the draft head's side a load measures: -1 (none), 0 or 1");
+    if (cfg.trial.spec_side < -1 || cfg.trial.spec_side > KnobTrialConfig::spec_side_drafter)
+        return fail("{trial-spec} is the draft's side a load measures: -1 (none), 0 (no draft), 1 (the model's "
+                    "head) or 2 (a draft model)");
     if (cfg.trial.spec_side >= 0 &&
         (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0 || cfg.trial.shared_device_side >= 0))
         return fail("{trial-spec} and {trial-device-cache}, {trial-width} or {trial-shared-device} each time a load's "
                     "decode: one at a time");
-    if (cfg.trial.spec_side == 1 && !cfg.spec.is_mtp())
+    if (cfg.trial.spec_side == KnobTrialConfig::spec_side_head && !cfg.spec.is_mtp())
         return fail("{trial-spec} 1 times the decode with the model's head drafting: it needs {spec=mtp}");
+    if (cfg.trial.spec_side == KnobTrialConfig::spec_side_drafter && !cfg.spec.is_drafter())
+        return fail("{trial-spec} 2 times the decode with a draft model drafting: it needs {spec=drafter}");
     if (cfg.trial.spec_side == 0 && cfg.spec.enabled())
         return fail("{trial-spec} 0 times the decode without a draft: it needs {spec} off");
     if (cfg.trial.shared_device_side == 1 && cfg.n_gpu_layers == 0)

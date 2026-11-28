@@ -168,6 +168,15 @@ int main() {
         two.trial.width_narrow = 512;
         expect_fail("trial spec beside the width's", two);
         t.trial.spec_side = 2;
+        expect_fail("trial spec 2 with the head armed, not a draft model", t);
+        RunConfig dm = ok_base();
+        dm.spec.source = DraftSource::drafter;
+        dm.spec.drafter_file = "drafter.gguf";
+        dm.trial.spec_side = 2;
+        expect_ok("trial spec 2, a draft model drafting", dm);
+        dm.trial.spec_side = 1;
+        expect_fail("trial spec 1 with a draft model armed, not the head", dm);
+        t.trial.spec_side = 3;
         expect_fail("trial spec out of range", t);
     }
     {

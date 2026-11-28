@@ -832,31 +832,58 @@ bool lost(int failed_opens) {
 }
 
 // ── what a draft takes on the device its target runs on ──
-// The draft this model has, or none. Only the model's own head today; a separate drafter (its file's
-// bytes in ModelProfile::draft_file_bytes) is a source this engine cannot open yet, and adds its own
-// case here when it can, so the rules ask "is there a draft" and never which kind.
-DraftSource draft_source(const ModelProfile & m) {
-    return m.has_mtp ? DraftSource::mtp : DraftSource::none;
+// The drafts this model has, as the sides of one decision: its own head, read from its file, and a
+// draft model the front-end paired with it (ModelProfile::drafter). The engine never looks for a
+// draft file; the rules ask which drafts there are and never name a kind.
+struct DraftOption {
+    DraftSource source = DraftSource::none;
+    int side = -1;           // KnobTrialConfig::spec_side
+    double tps = 0.0;        // its decode measured on a load here, 0 untimed
+    int unviable = 0;        // loads of it that failed to open here
+    const char * words = ""; // what it is, in a sentence
+};
+std::vector<DraftOption> draft_options(const ModelProfile & m) {
+    std::vector<DraftOption> out;
+    if (m.has_mtp)
+        out.push_back({DraftSource::mtp, KnobTrialConfig::spec_side_head, m.knobs.spec_tps, m.knobs.spec_unviable,
+                       "its own MTP head"});
+    if (!m.drafter.path.empty())
+        out.push_back({DraftSource::drafter, KnobTrialConfig::spec_side_drafter, m.knobs.drafter_tps,
+                       m.knobs.drafter_unviable, "the draft model paired with it"});
+    return out;
 }
 
 // The bytes a draft takes on the device that computes its target, beside the target's own: its weights,
-// its context's KV and its compute at the width it runs. None of it is in the fitter's placement (the
-// draft opens as a context of its own after the target), so a device expert cache sized without it fills
-// the card the draft then needs: on a 24 GB card a 15.2 GB cache left no room for a draft of 3 and the
-// session ran out of device memory reserving it. The weights are the file's own figures: the head's block
-// inside the model (a head in a file of its own is placed by its own rule, mtp-head-on-devices), or a
-// drafter's file. The context is what a front-end that opens a drafter states, or else derived from the
-// target's placement: one block's share of the target's KV on the devices, and the target's compute
-// buffer moved to the draft's width along the fitter's measured slope (Placement::at_width), at least
-// the width a draft context is reserved at. 0 where no draft is armed.
-uint64_t draft_device_bytes(const RunConfig & c, const ModelProfile & m, const Placement & pl, int draft) {
-    if (!c.spec.is_mtp()) return 0;
-    const uint64_t weights = c.spec.mtp_head.empty() ? m.mtp_block_bytes : 0;
+// its context's KV, its compute at the width it runs, and the target's layer input it reads. None of it
+// is in the fitter's placement (the draft opens as a context of its own after the target), so a device
+// expert cache sized without it fills the card the draft then needs: on a 24 GB card a 15.2 GB cache left
+// no room for a draft model at 3 and the session ran out of device memory reserving it.
+// - weights: the head's block inside the model, or `file_weights` where the caller places a draft file
+//   (a file the run names is placed by its own rule, draft_file_knob, which charges it there);
+// - context: what the front-end that opens the draft states (ModelProfile::draft_context_bytes), or else
+//   derived from the target's placement and the files' headers: a share of the target's KV on the
+//   devices per draft block (one for the head, the draft model's block count for a drafter), the
+//   target's compute buffer moved to the draft's width along the fitter's measured slope
+//   (Placement::at_width), at least the width a draft context is reserved at, and for a draft that
+//   reads the target's layers the buffer the target keeps of their input on its output device, F32,
+//   one row of the model's width per layer read and per token of a batch (llama.cpp's layer_inp_dev),
+//   whose batch is the context here.
+// 0 where no draft that runs on weights is armed.
+uint64_t draft_device_bytes(
+    const RunConfig & c, const ModelProfile & m, const Placement & pl, int draft, uint64_t file_weights) {
+    if (!c.spec.uses_driver()) return 0;
+    const uint64_t weights = c.spec.head_in_model() ? m.mtp_block_bytes : file_weights;
     if (m.draft_context_bytes > 0) return weights + m.draft_context_bytes;
     const uint32_t width = (uint32_t) std::max(1 + std::max(0, draft), SpecConfig::draft_context_ubatch);
-    const uint64_t kv = m.n_layer > 0 ? pl.device_context_bytes / m.n_layer : 0;
+    const uint64_t blocks = c.spec.is_drafter() ? std::max<uint32_t>(1, m.drafter.n_block) : 1;
+    const uint64_t kv = m.n_layer > 0 ? pl.device_context_bytes / m.n_layer * blocks : 0;
     const uint64_t compute = pl.compute_width > 0 ? pl.at_width(width).device_compute_bytes : pl.device_compute_bytes;
-    return weights + kv + compute;
+    // The target's batch is its context (session_config_from: a prompt that fits prefills in one batch),
+    // so this buffer grows with the context.
+    const uint64_t layer_input = c.spec.is_drafter() ? (uint64_t) sizeof(float) * m.drafter.target_layers * m.n_embd *
+                                                           (uint64_t) std::max(1, c.n_ctx)
+                                                     : 0;
+    return weights + kv + compute + layer_input;
 }
 
 void choose_device_tier(Planning & s) {
@@ -902,7 +929,7 @@ void choose_device_tier(Planning & s) {
     // sized, where the device's memory is its own (where it is the host's, the host's ledger holds it).
     const uint64_t draft =
         !devices_share_host_memory(s.hw)
-            ? std::min(tier.budget - projector, draft_device_bytes(s.p.config, m, pl, s.p.config.spec.draft_max))
+            ? std::min(tier.budget - projector, draft_device_bytes(s.p.config, m, pl, s.p.config.spec.draft_max, 0))
             : 0;
     const uint64_t budget = tier.budget - projector - draft;
     // What the budget holds beyond the fitter's experts, for the rationale.
@@ -4736,14 +4763,6 @@ void choose_host_call(Plan & p, const ModelProfile & m, const PlanRequest & req)
 }
 
 // ── a draft, decided across loads where the verify's reads stay in memory ──
-// The value a decision names a draft by (the `spec` row's own, params.cpp) and what it is, in words.
-const char * draft_value(DraftSource s) {
-    return s == DraftSource::mtp ? "mtp" : "off";
-}
-const char * draft_words(DraftSource s) {
-    return s == DraftSource::mtp ? "its own MTP head" : "no draft";
-}
-
 // Whether the side this configuration serves keeps a verify's reads in memory. A verify computes
 // 1 + draft positions in one pass and reads the union of their experts, more than a token reads. Held
 // whole, every expert is in memory. From a device expert cache, the cache has to hold that union, which
@@ -4764,14 +4783,16 @@ bool verify_reads_held(const RunConfig & c, const ModelProfile & m, int draft, s
     return !c.moe.enabled;
 }
 
-// Whether a model drafts, decided across loads like the shared-memory device (MeasuredKnobs::spec_tps).
-// Asked on the plan as it will serve, so it covers every side whose verify reads stay in memory
-// (verify_reads_held): the model held whole, or served from a device expert cache that holds a verify,
-// on a device that shares the host's memory as on a card with memory of its own. The sign is the
-// machine's: the head paid 18% on a 24 GB card with the model resident, and on a 16 GB laptop serving
-// from a device expert cache 43% (24.2 -> 34.6 tok/s at a draft of 3). So the loads measure it, and the
-// draft is kept only on a verdict. One decision is timed a load: any other this plan left pending goes
-// first, and so does a device whose answers the load compares.
+// Whether a model drafts and with which draft, decided across loads like the shared-memory device
+// (MeasuredKnobs::spec_tps, drafter_tps, no_spec_tps). Asked on the plan as it will serve, so it covers
+// every side whose verify reads stay in memory (verify_reads_held): the model held whole, or served from a
+// device expert cache that holds a verify, on a device that shares the host's memory as on a card with
+// memory of its own. Its sides are the drafts the model has (draft_options) and none. The sign is the
+// machine's and the draft's: on a 16 GB laptop serving Qwen3.6-35B from a device expert cache the head at
+// a draft of 3 took the decode from 24.2 to 34.6 tok/s and a draft model to 37.7; on a rented 24 GB card a
+// draft model took Qwen3.8-Flash-Next from 66 to 110-114. So the loads measure each, one a load, and the
+// fastest is kept only past the margin over no draft. One decision is timed a load: any other this plan
+// left pending goes first, and so does a device whose answers the load compares.
 void choose_spec(Plan & p,
                  const HardwareProfile & hw,
                  const ModelProfile & m,
@@ -4779,8 +4800,8 @@ void choose_spec(Plan & p,
                  const PlanRequest & req,
                  const PlannerPolicy & pol) {
     // dt:plan.spec
-    const DraftSource source = draft_source(m);
-    if (source == DraftSource::none || !req.measure_knobs) return;
+    const std::vector<DraftOption> all = draft_options(m);
+    if (all.empty() || !req.measure_knobs) return;
     for (const char * knob : {"spec", "mtp-head", "trial-spec"})
         if (req.is_pinned(knob)) return;
     for (const Decision & x : p.decisions)
@@ -4790,38 +4811,62 @@ void choose_spec(Plan & p,
     const KnobTrialConfig & pending = c.trial;
     if (names_side(pending) || !pending.answer_device.empty()) return;
     const int draft = req.is_pinned("draft") ? c.spec.draft_max : pol.draft_tokens;
-    // On a device whose memory is its own, the draft opens beside the target in room the device expert
-    // cache was sized into (draft_device_bytes): the cache gives the draft those bytes, and what is left
-    // has to hold a verify still. Where the device's memory is the host's, the host's ledger holds it.
-    RunConfig sized = c;
-    sized.spec.source = source;
-    sized.spec.draft_max = draft;
-    uint64_t lent = 0;
-    if (c.moe.device_cache_mb > 0 && !devices_share_host_memory(hw)) {
-        const uint64_t cache = (uint64_t) c.moe.device_cache_mb << 20;
-        lent = std::min(cache, draft_device_bytes(sized, m, projected, draft));
-        if (cache - lent < (uint64_t) (1 + draft) * m.token_cycle_bytes) return; // no room for both
-        sized.moe.device_cache_mb = (int) mib(cache - lent);
+    const bool own_memory = c.moe.device_cache_mb > 0 && !devices_share_host_memory(hw);
+
+    // Each draft as it would be armed. On a device whose memory is its own, the draft opens beside the
+    // target in room the device expert cache was sized into (draft_device_bytes): the cache gives the
+    // draft those bytes, and what is left has to hold a verify still; where the device's memory is the
+    // host's, the host's ledger holds it. A draft model goes where its target's experts are computed: on
+    // the device of a device expert cache, unless the caller placed it.
+    struct Armed {
+        DraftOption o;
+        RunConfig config;
+        uint64_t lent = 0;
+        std::string where;
+    };
+    std::vector<Armed> options;
+    for (const DraftOption & o : all) {
+        Armed a{o, c, 0, ""};
+        a.config.spec.source = o.source;
+        a.config.spec.draft_max = draft;
+        uint64_t file_weights = 0;
+        if (o.source == DraftSource::drafter) {
+            a.config.spec.drafter_file = m.drafter.path;
+            if (!req.is_pinned("drafter-on-devices")) a.config.spec.drafter_on_devices = c.moe.device_cache_mb > 0;
+            if (a.config.spec.drafter_on_devices) file_weights = m.drafter.bytes;
+        }
+        if (own_memory) {
+            const uint64_t cache = (uint64_t) c.moe.device_cache_mb << 20;
+            a.lent = std::min(cache, draft_device_bytes(a.config, m, projected, draft, file_weights));
+            if (cache - a.lent < (uint64_t) (1 + draft) * m.token_cycle_bytes) continue; // no room for both
+            a.config.moe.device_cache_mb = (int) mib(cache - a.lent);
+        }
+        if (!verify_reads_held(a.config, m, draft, a.where)) continue;
+        options.push_back(std::move(a));
     }
-    std::string where;
-    if (!verify_reads_held(sized, m, draft, where)) return;
+    if (options.empty()) return;
     const char * knob = "spec";
     const MeasuredKnobs & mk = m.knobs;
-    const double on = mk.spec_tps, off = mk.no_spec_tps;
+    const double off = mk.no_spec_tps;
     const double margin_f = (double) pol.min_draft_win;
     const std::string margin = u64s((uint64_t) (margin_f * 100.0 + 0.5)) + "%";
-    char measured[128];
-    std::snprintf(measured, sizeof(measured), "%.2f tok/s with the draft against %.2f without", on, off);
-    const std::string held = where + ", and the model drafts with " + draft_words(source);
+    std::string sides;
+    for (const Armed & a : options) {
+        char r[96];
+        std::snprintf(r, sizeof(r), "%.2f tok/s with %s", a.o.tps, a.o.words);
+        sides +=
+            (sides.empty() ? "" : ", ") + std::string(a.o.tps > 0.0 ? r : std::string("untimed with ") + a.o.words);
+    }
+    char off_s[64];
+    std::snprintf(off_s, sizeof(off_s), "%.2f without", off);
+    const std::string measured = sides + " against " + (off > 0.0 ? std::string(off_s) : "untimed without");
+    const std::string held = options.front().where;
 
-    // The draft armed as the configuration has it, or nothing where validate() refuses it there: the
-    // plan never hands a load a configuration that cannot open.
+    // The draft armed as its option has it, or nothing where validate() refuses it there: the plan never
+    // hands a load a configuration that cannot open.
     std::string refused;
-    const auto arm = [&](int side) -> bool {
-        RunConfig armed = c;
-        armed.spec.source = source;
-        armed.spec.draft_max = draft;
-        armed.moe.device_cache_mb = sized.moe.device_cache_mb;
+    const auto arm = [&](const Armed & a, int side) -> bool {
+        RunConfig armed = a.config;
         armed.trial.spec_side = side;
         const ValidationResult v = validate(armed);
         if (!v.ok) {
@@ -4829,11 +4874,11 @@ void choose_spec(Plan & p,
             return false;
         }
         c = armed;
-        if (lent > 0)
+        if (a.lent > 0)
             for (Decision & x : p.decisions)
                 if (x.knob == "device-cache-mb" && x.value != "0") {
                     x.value = u64s((uint64_t) c.moe.device_cache_mb);
-                    x.reason += "; " + u64s(mib(lent)) + " MiB of it go to the draft, which opens beside the target";
+                    x.reason += "; " + u64s(mib(a.lent)) + " MiB of it go to the draft, which opens beside the target";
                 }
         return true;
     };
@@ -4849,56 +4894,63 @@ void choose_spec(Plan & p,
     const auto without = [&](Source src, const std::string & brief, const std::string & reason) {
         note("off", src, brief, reason);
     };
-    const auto with_draft = [&](Source src, const std::string & brief, const std::string & reason, int side) {
-        if (arm(side))
-            note(draft_value(source), src, brief,
-                 reason + "; " + u64s((uint64_t) draft) + " tokens drafted per verify" +
-                     (lent > 0 ? "; the device expert cache gives the draft " + u64s(mib(lent)) +
-                                     " MiB (its weights, KV and compute), " + u64s((uint64_t) c.moe.device_cache_mb) +
-                                     " MiB left"
-                               : std::string()));
+    const auto with_draft = [&](const Armed & a, Source src, const std::string & brief, const std::string & reason,
+                                int side) {
+        if (arm(a, side))
+            note(c.spec.source_name(), src, brief,
+                 reason + "; " + u64s((uint64_t) draft) + " tokens drafted per verify, with " + a.o.words +
+                     (a.lent > 0 ? "; the device expert cache gives the draft " + u64s(mib(a.lent)) +
+                                       " MiB (its weights, KV, compute and the layer input it reads), " +
+                                       u64s((uint64_t) c.moe.device_cache_mb) + " MiB left"
+                                 : std::string()));
         else
             without(Source::Derived, "No draft: this configuration cannot draft.",
                     "the draft could not be armed here: " + refused);
     };
 
     // dt:plan.spec.sides
-    if (lost(mk.spec_unviable)) {
+    // A draft whose loads failed here as often as a plan allows is out; with none left, no draft.
+    std::vector<const Armed *> alive;
+    for (const Armed & a : options)
+        if (!lost(a.o.unviable)) alive.push_back(&a);
+    if (alive.empty()) {
         without(Source::Measured, "No draft: loads that drafted failed here.",
-                "loads of this model with a draft failed on this machine");
+                "loads of this model with each of its drafts failed on this machine");
         return;
     }
-    if (on > 0.0 && off > 0.0) {
-        if (on > off * (1.0 + margin_f))
-            with_draft(Source::Measured, "The model drafts, which decodes faster here.",
-                       std::string(measured) + ", past the " + margin + " margin", -1);
+    // A draft not yet timed: this load serves it and times it, one draft a load, before the decode
+    // without one; its failure to open reopens without it (the server's other side), and counts.
+    for (const Armed * a : alive)
+        if (a->o.tps <= 0.0) {
+            with_draft(*a, Source::Derived, "This load drafts, and times it.",
+                       "no load has timed this draft on this machine (" + measured +
+                           "); every draft and the decode without one are timed, one a load, and the plan after "
+                           "keeps the fastest draft only where it decodes faster than none by the " +
+                           margin + " margin",
+                       a->o.side);
+            return;
+        }
+    const Armed * best = alive.front();
+    for (const Armed * a : alive)
+        if (a->o.tps > best->o.tps) best = a;
+    if (off > 0.0) {
+        if (best->o.tps > off * (1.0 + margin_f))
+            with_draft(*best, Source::Measured, "The model drafts, which decodes faster here.",
+                       measured + "; the fastest draft is past the " + margin + " margin", -1);
         else
             without(Source::Measured, "No draft: drafting does not decode faster here.",
-                    std::string(measured) + ", inside the " + margin + " margin");
-        return;
-    }
-    // A side not yet timed: this load serves it and times it. The draft first, since without it is the
-    // decode every load before this rule ran; its failure to open reopens without it (the server's
-    // other side), and counts.
-    if (on <= 0.0) {
-        with_draft(Source::Derived, "This load drafts, and times it.",
-                   "no load has timed it on this machine; the next times the decode without it, and the plan "
-                   "after keeps the draft only where it decodes faster by the " +
-                       margin + " margin",
-                   1);
+                    measured + "; the fastest draft is inside the " + margin + " margin");
         return;
     }
     if (lost(mk.no_spec_unviable)) {
-        with_draft(Source::Measured, "The model drafts: loads without a draft failed here.",
-                   "loads of this model without a draft failed on this machine", -1);
+        with_draft(*best, Source::Measured, "The model drafts: loads without a draft failed here.",
+                   measured + "; loads of this model without a draft failed on this machine", -1);
         return;
     }
-    char timed[64];
-    std::snprintf(timed, sizeof(timed), "%.2f tok/s", on);
     without(Source::Derived, "This load decodes without a draft, and times it.",
-            "the draft was timed at " + std::string(timed) +
-                " here; this load times the decode without it, and the plan after keeps the draft only "
-                "where it decodes faster by the " +
+            measured +
+                "; this load times the decode without a draft, and the plan after keeps the fastest "
+                "draft only where it decodes faster by the " +
                 margin + " margin");
     c.trial.spec_side = 0;
 }

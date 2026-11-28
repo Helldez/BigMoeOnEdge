@@ -5273,6 +5273,113 @@ int main() {
                   "draft on a card: a stated draft context is what the cache gives",
                   std::to_string(q.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole));
         }
+
+        // A draft model paired with the model on the card: its file goes on the device beside the cache,
+        // and the cache gives it its file, its blocks' KV, its compute, and the buffer the target keeps of
+        // the input of the layers it reads (F32, the model's width, per layer read and per batch token).
+        {
+            ModelProfile paired = no_head;
+            paired.n_embd = 2048;
+            paired.drafter.path = "/m/drafter.gguf";
+            paired.drafter.bytes = 900 * MiB;
+            paired.drafter.n_block = 5;
+            paired.drafter.target_layers = 5;
+            const RunConfig cfg = base_cfg();
+            const uint64_t layer_input = 4ull * 5 * 2048 * (uint64_t) cfg.n_ctx; // the session's batch is its context
+            const uint64_t want = paired.drafter.bytes + busy.device_context_bytes / model.n_layer * 5 +
+                                  busy.at_width(width).device_compute_bytes + layer_input;
+            const Plan q = plan_run(cfg, card, paired, busy, keep, PlannerPolicy::defaults());
+            check(q.config.spec.is_drafter() && q.config.spec.drafter_file == paired.drafter.path &&
+                      q.config.spec.drafter_on_devices &&
+                      q.config.trial.spec_side == KnobTrialConfig::spec_side_drafter && near(shrunk_by(q), want) &&
+                      validate(q.config).ok,
+                  "draft model on a card: armed and timed, the cache shrinks by its file, KV, compute and layer input",
+                  std::to_string(q.config.moe.device_cache_mb) + " MiB of " + std::to_string(whole) + ", charge " +
+                      std::to_string(want >> 20) + " MiB");
+        }
+    }
+
+    // ── which draft: the model's head, a paired draft model, or none, each timed across loads ──
+    {
+        HardwareProfile uma = unified();
+        uma.host_bandwidth_gibs = 60.0;
+        ComputeDevice & acc = uma.devices[1];
+        acc.usable = Tri::Yes;
+        acc.runs_expert_op = Tri::Yes;
+        acc.identity_ok = Tri::Yes;
+        acc.memory_bandwidth_gibs = 120.0;
+        Placement pl;
+        pl.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            pl.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        pl.compute_width = 8192;
+        pl.host_compute_per_token = 256 * KiB;
+        pl.raw_host_compute_bytes = 8192ull * 256 * KiB;
+        pl.n_ctx = 16384;
+        RunConfig long_ctx = base_cfg();
+        long_ctx.n_ctx = 16384;
+        ModelProfile both = model;
+        both.has_mtp = true;
+        both.drafter.path = "/m/drafter.gguf";
+        both.drafter.bytes = 900 * MiB;
+        both.drafter.n_block = 5;
+        both.drafter.target_layers = 5;
+        both.knobs.device_cache_tps = 40.0;
+        both.knobs.host_call_tps = 30.0;
+        both.knobs.set_device_answer(acc.name, 1);
+        PlanRequest keep;
+        keep.measure_knobs = true;
+        const auto plan_with = [&](const ModelProfile & m) {
+            return plan_run(long_ctx, uma, m, pl, keep, PlannerPolicy::defaults());
+        };
+        const auto side_of = [](const Plan & p) { return p.config.trial.spec_side; };
+
+        // One draft a load, the head first, then the draft model, then none.
+        const Plan l1 = plan_with(both);
+        check(l1.config.spec.is_mtp() && side_of(l1) == KnobTrialConfig::spec_side_head && validate(l1.config).ok,
+              "which draft, load 1: the head, timed");
+        ModelProfile m2 = both;
+        m2.knobs.spec_tps = 90.0;
+        const Plan l2 = plan_with(m2);
+        check(l2.config.spec.is_drafter() && l2.config.spec.drafter_file == both.drafter.path &&
+                  side_of(l2) == KnobTrialConfig::spec_side_drafter && validate(l2.config).ok,
+              "which draft, load 2: the paired draft model, timed", validate(l2.config).error);
+        ModelProfile m3 = m2;
+        m3.knobs.drafter_tps = 112.0;
+        const Plan l3 = plan_with(m3);
+        check(!l3.config.spec.enabled() && side_of(l3) == 0 && l3.config.spec.drafter_file.empty() &&
+                  validate(l3.config).ok,
+              "which draft, load 3: none, timed");
+        ModelProfile m4 = m3;
+        m4.knobs.no_spec_tps = 66.0;
+        const Plan l4 = plan_with(m4);
+        const Decision * d4 = find(l4, "spec");
+        check(l4.config.spec.is_drafter() && side_of(l4) < 0 && d4 && d4->value == "drafter" &&
+                  d4->source == Source::Measured && validate(l4.config).ok,
+              "which draft, all timed: the fastest (the draft model, 112 against the head's 90 and 66) is kept",
+              d4 ? d4->reason : "no decision");
+        ModelProfile m5 = m4;
+        m5.knobs.spec_tps = 70.0;
+        m5.knobs.drafter_tps = 71.0;
+        const Plan l5 = plan_with(m5);
+        check(!l5.config.spec.enabled() && side_of(l5) < 0 && l5.config.spec.drafter_file.empty(),
+              "which draft, all timed: the fastest inside the margin over none is off");
+        // A draft model whose loads failed is out; the head alone is weighed.
+        ModelProfile m6 = m4;
+        m6.knobs.drafter_unviable = MeasuredKnobs::unviable_max;
+        const Plan l6 = plan_with(m6);
+        check(l6.config.spec.is_mtp() && side_of(l6) < 0, "which draft: a draft model that failed to open is out");
+        // A draft model alone, no head: it is the one draft timed.
+        ModelProfile only = both;
+        only.has_mtp = false;
+        const Plan l7 = plan_with(only);
+        check(l7.config.spec.is_drafter() && side_of(l7) == KnobTrialConfig::spec_side_drafter,
+              "which draft: a paired draft model without a head is timed");
+        // No pairing, no head: nothing.
+        ModelProfile none = only;
+        none.drafter = {};
+        const Plan l8 = plan_with(none);
+        check(!l8.config.spec.enabled() && !find(l8, "spec"), "which draft: no head and no paired draft model, none");
     }
 
     return failures ? 1 : 0;

@@ -478,6 +478,18 @@ int main() {
             keep_measured_knobs(kept, later);
             check(kept.size() == 1 && kept[0].spec_tps == 36.0 && kept[0].no_spec_tps == 31.0,
                   "record: a later side's rate merges beside the other");
+            // The draft model's side: its own rate and failures, beside the head's.
+            KnobTrialConfig model_draft;
+            model_draft.spec_side = KnobTrialConfig::spec_side_drafter;
+            record_side_unviable(model_draft, kept[0]);
+            check(kept[0].drafter_unviable == 1 && kept[0].spec_unviable == 0,
+                  "record: a draft model's failed open counts on its own side");
+            record_side_rate(model_draft, 112.0, kept[0]);
+            std::vector<MeasuredKnobs> mback;
+            check(parse_measured_knobs(format_measured_knobs({kept[0]}), mback, err) && mback.size() == 1 &&
+                      std::fabs(mback[0].drafter_tps - 112.0) < 1e-9 && mback[0].drafter_unviable == 0 &&
+                      std::fabs(mback[0].spec_tps - 36.0) < 1e-9,
+                  "record: the draft model's rate reads back beside the head's, the failure cleared");
         }
         // The shared-memory device's prompt rates, as the load that compared the answers timed them: read
         // back as written, counted, merged beside the decode rates, and absent from an earlier record.

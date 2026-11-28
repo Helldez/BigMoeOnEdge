@@ -55,6 +55,12 @@ Then:
 bmoe-cli -m model.gguf --drafter --drafter-file drafter.gguf --draft 8 -p "..."
 ```
 
+With `--auto`, a `--drafter-file` typed without `--drafter` pairs the file with the model instead:
+the plan times it beside the model's own head and no draft, one a load, and arms the fastest only
+where it decodes faster than none by 10%. The server pairs the draft model of the model's folder
+the same way, from the headers ([server-api.md](server-api.md)). The engine never looks for a file
+itself ([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+
 A full-vocabulary drafter carries no token embeddings and no output head: it uses the target's,
 through the context it drafts for. That is why the file is small beside the model, and it is the
 reason the draft context is created with the target context as its `ctx_other`.

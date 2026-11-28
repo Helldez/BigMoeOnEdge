@@ -243,6 +243,15 @@ Plan give_way(
 }
 
 Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
+    // A draft model named without spec=drafter is the one the front-end paired with this model
+    // (ModelProfile::drafter): a side of the draft decision, not a draft the run makes. The plan names
+    // it again only where it arms it, so the configuration it starts from carries none.
+    // dt:plan.facts.drafter
+    if (!cfg.spec.drafter_file.empty() && !cfg.spec.is_drafter()) {
+        RunConfig unpaired = cfg;
+        unpaired.spec.drafter_file.clear();
+        return give_way(facts, unpaired, req, model, plan_layout(facts, unpaired, req, model));
+    }
     return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model));
 }
 
@@ -290,6 +299,19 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         std::error_code ec;
         const auto draft_size = std::filesystem::file_size(cfg.spec.draft_file(), ec);
         if (!ec) r.model.draft_file_bytes = (uint64_t) draft_size;
+    }
+    // A draft model the run names, drafting or paired: what its header says it costs beside the model,
+    // its blocks and the model's layers whose input it reads (draft_device_bytes).
+    if (!cfg.spec.drafter_file.empty()) {
+        const GgufHeaderFacts h = probe_gguf_header(cfg.spec.drafter_file.c_str());
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(cfg.spec.drafter_file, ec);
+        if (h.ok && h.reads_target) {
+            r.model.drafter.path = cfg.spec.drafter_file;
+            r.model.drafter.bytes = ec ? 0 : (uint64_t) size;
+            r.model.drafter.n_block = (uint32_t) std::max(0, h.n_block);
+            r.model.drafter.target_layers = (uint32_t) std::max(0, h.n_target_layers);
+        }
     }
     // The projector the same: held whole for the run, so its size is what it costs where it goes.
     if (!cfg.mmproj.empty()) {

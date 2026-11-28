@@ -39,6 +39,7 @@ GgufHeaderFacts probe_gguf_header(const char * model_path) {
     h.n_block = info.n_block;
     h.n_nextn = info.n_nextn;
     h.reads_target = info.reads_target;
+    h.n_target_layers = info.n_target_layers;
     h.name = info.name;
     return h;
 }

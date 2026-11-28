@@ -86,6 +86,10 @@ struct MeasuredKnobs {
     // verify widens the experts a step reads.
     double spec_tps = 0.0;
     double no_spec_tps = 0.0;
+    // The same with the draft model the front-end paired with this one drafting (spec=drafter), against
+    // the same no_spec_tps: a third side of the same decision. On a rented 24 GB card a block-diffusion
+    // drafter at a draft of 5 took Qwen3.8-Flash-Next from 66 to 110-114 tok/s on code.
+    double drafter_tps = 0.0;
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -160,7 +164,7 @@ struct MeasuredKnobs {
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
     int host_call_unviable = 0;
-    int spec_unviable = 0, no_spec_unviable = 0;
+    int spec_unviable = 0, no_spec_unviable = 0, drafter_unviable = 0;
     // What the device the model failed to open on said it had free when it failed, in MiB, as its
     // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
     // program lets go of it, a setting raises it), so a plan names the device again where it now
@@ -262,8 +266,8 @@ struct MeasuredKnobs {
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
                (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
                (host_call_tps > 0.0) + (no_host_call_tps > 0.0) + (host_call_unviable > 0) + (spec_tps > 0.0) +
-               (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) + (int) prefill.size() +
-               (int) device_answers.size();
+               (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) + (drafter_tps > 0.0) +
+               (drafter_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
     }
 };
 

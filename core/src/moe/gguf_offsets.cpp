@@ -87,7 +87,12 @@ void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
         out.n_swa = meta_int(gctx, out.arch + ".attention.sliding_window", 0);
         out.n_block = meta_int(gctx, out.arch + ".block_count", 0);
         out.n_nextn = meta_int(gctx, out.arch + ".nextn_predict_layers", 0);
-        out.reads_target = gguf_find_key(gctx, (out.arch + ".target_layers").c_str()) >= 0;
+        const int64_t target = gguf_find_key(gctx, (out.arch + ".target_layers").c_str());
+        out.reads_target = target >= 0;
+        // How many of the target's layers it reads: each one's input is a buffer the target keeps for
+        // the draft (llama_set_embeddings_layer_inp), so it is what the draft costs the target's device.
+        if (target >= 0 && gguf_get_kv_type(gctx, target) == GGUF_TYPE_ARRAY)
+            out.n_target_layers = (int) gguf_get_arr_n(gctx, target);
     }
     out.ok = true;
 }

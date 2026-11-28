@@ -733,14 +733,15 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("trial-spec", "Measure the draft head", G::Speculation, L::Experimental,
-                          "Time the decode of this load's side of whether the model drafts with its own MTP head, "
+        ParamDesc d = row("trial-spec", "Measure the draft", G::Speculation, L::Experimental,
+                          "Time the decode of this load's side of whether and with which draft the model drafts, "
                           "where a verify's reads stay in memory (the model held whole, or a device expert cache "
-                          "that holds a verify), to be compared across loads: 1 with the head drafting (--mtp), 0 "
-                          "without. -1 times neither. Changes no output beyond what --mtp itself does; the plan "
-                          "sets it on a load that serves a side not yet measured on this machine.");
+                          "that holds a verify), to be compared across loads: 1 with the model's own head "
+                          "(--mtp), 2 with a draft model (--drafter), 0 without a draft. -1 times none. Changes no "
+                          "output beyond what the draft itself does; the plan sets it on a load that serves a "
+                          "side not yet measured on this machine.");
         d.value_hint = "N";
-        bounds(d, -1, 1, "side");
+        bounds(d, -1, KnobTrialConfig::spec_side_drafter, "side");
         special(d, "-1", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.trial.spec_side; });
         t.push_back(d);

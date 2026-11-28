@@ -485,7 +485,14 @@ writes; put it in the model's folder and the server pairs the two by their heade
 same base model in `general.name`, letters and digits compared. A projector that names another
 model is never paired, however alone it is in the folder; the folder's only projector goes with a
 model only when one of the two headers has no name to check. Or name it with the `mmproj`
-parameter. Any model llama.cpp's projector library knows, in any quantization of either
+parameter.
+
+**Draft models.** Where no draft is set, the server pairs the model with the draft model of its folder,
+by headers again: a file that names layers of another model it reads (`<arch>.target_layers`), whose
+`general.name` starts with the model's (a drafter's name is its target's with a suffix, as
+"Qwen3.6-35B-A3B-DFlash"). Two such files and no match is no choice. The plan then times it beside the
+model's own head and no draft, and arms it only where it decodes faster
+([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)). Any model llama.cpp's projector library knows, in any quantization of either
 file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
 to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
 names. Only a user message carries images, at most 8 of them, and one declaring more than 64

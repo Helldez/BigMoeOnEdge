@@ -91,6 +91,9 @@ public:
     // folder (model_files.h: projector_for); "" when none does. What a load uses when {mmproj} is
     // not set by hand, and what the listing shows as the model's `projector`.
     std::string projector_for(const std::string & path);
+    // The draft model paired with the model at `path`, from the headers of its folder
+    // (model_files.h: drafter_for); "" when none is.
+    std::string drafter_for(const std::string & path);
 
     // Add (or replace, by id) an entry the server built, and keep it. "" when kept; otherwise
     // why it was not.

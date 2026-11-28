@@ -128,6 +128,19 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   A separate drafter's file has a place in the model's facts (`ModelProfile::draft_file_bytes`) and joins
   the rule once this engine opens one
   ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+- **`--auto` weighs a draft model paired with the model beside its own head and no draft.** On a rented
+  24 GB card a block-diffusion draft model at a draft of 5 took Qwen3.8-Flash-Next from 66 to 110-114 tok/s
+  on code, and `--auto` armed none. The front-end now pairs one: the server takes the draft model of the
+  model's folder, by headers (a file that reads another model's layers and names this model as its base,
+  `drafter_for`), and the CLI takes a `--drafter-file` typed with `--auto` and without `--drafter`. The
+  engine never looks for a file. The draft rule then has up to three sides: the head (`--trial-spec 1`),
+  the draft model (`--trial-spec 2`, its rate kept as `drafter_tps`) and none (`--trial-spec 0`). It times
+  each on a load of its own and keeps the fastest only where it decodes faster than none by 10%. The
+  draft model goes on the device of a device expert cache and is charged there. Its context now counts
+  the buffer the target keeps of the input of the layers it reads (F32, `target_layers × n_embd ×
+  n_ctx`, the layer count read from its header), its blocks' KV and its compute. The width stays
+  `PlannerPolicy::draft_tokens` (3); a 3-against-5 side would cost a load per draft and is not timed. The
+  plan's own path has not run on hardware yet.
 - **A draft's bytes are charged on a card before its device expert cache is sized.** On a rented 24 GB card,
   a 15.2-15.6 GB device cache left no room for a draft of 3, and the session ran out of device memory
   reserving it. A draft opens after the fitter's placement, so it was in no ledger. Where the device's

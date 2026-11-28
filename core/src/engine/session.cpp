@@ -2612,7 +2612,10 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
     else if (cfg.trial.spec_side >= 0)
-        std::snprintf(what, sizeof(what), "%s the model's draft head", cfg.trial.spec_side == 1 ? "with" : "without");
+        std::snprintf(what, sizeof(what), "%s",
+                      cfg.trial.spec_side == KnobTrialConfig::spec_side_head      ? "with the model's draft head"
+                      : cfg.trial.spec_side == KnobTrialConfig::spec_side_drafter ? "with the draft model"
+                                                                                  : "without a draft");
     else if (cfg.trial.shared_device_side >= 0)
         std::snprintf(what, sizeof(what), "with every layer on %s",
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()

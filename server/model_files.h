@@ -99,6 +99,14 @@ struct CompanionFile {
 // Names of files never decide; headers do.
 std::string projector_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder);
 
+// The draft model that goes with a model, among the files of its folder: a file whose header says it
+// reads another model's layers (`<arch>.target_layers`: a drafter, not a model's own head) and names a
+// base model that starts with this one's (a drafter's `general.name` is its target's with a suffix, as
+// "Qwen3.6-35B-A3B-DFlash"), compared as projector_for compares; failing that, the folder's only such
+// file where one side has no name. "" when there is none or more than one fits. The plan then weighs it
+// beside the model's own head and no draft (docs/hardware-planning.md); names of files never decide.
+std::string drafter_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder);
+
 // `general.name` as compared above: lowercase letters and digits, nothing else.
 std::string name_key(const std::string & name);
 

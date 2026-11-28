@@ -229,6 +229,26 @@ std::string projector_for(const GgufHeaderFacts & model, const std::vector<Compa
     return unnamed_side.size() == 1 && projectors.size() == 1 ? unnamed_side.front()->path : "";
 }
 
+std::string drafter_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder) {
+    std::vector<const CompanionFile *> drafters;
+    for (const CompanionFile & f : folder)
+        if (f.header.ok && f.header.reads_target && file_role(f.header) == FileRole::Draft) drafters.push_back(&f);
+    if (drafters.empty()) return "";
+    const std::string want = name_key(model.name);
+    std::vector<const CompanionFile *> same, unnamed_side;
+    for (const CompanionFile * d : drafters) {
+        const std::string have = name_key(d->header.name);
+        if (!want.empty() && !have.empty()) {
+            if (have.compare(0, want.size(), want) == 0) same.push_back(d);
+        } else {
+            unnamed_side.push_back(d);
+        }
+    }
+    if (same.size() == 1) return same.front()->path;
+    if (same.size() > 1) return "";
+    return unnamed_side.size() == 1 && drafters.size() == 1 ? unnamed_side.front()->path : "";
+}
+
 FileRole file_role_hint(const std::string & name) {
     const size_t slash = name.find_last_of('/');
     const std::string base = lower(slash == std::string::npos ? name : name.substr(slash + 1));

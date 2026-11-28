@@ -256,6 +256,23 @@ std::string ModelLibrary::projector_for(const std::string & path) {
     return bmoe::server::projector_for(model, files);
 }
 
+std::string ModelLibrary::drafter_for(const std::string & path) {
+    const GgufHeaderFacts model = probe_gguf_header(path.c_str());
+    if (!model.ok || file_role(model) != FileRole::Model) return "";
+    std::error_code ec;
+    const fs::path folder = fs::u8path(path).parent_path();
+    std::vector<CompanionFile> files;
+    for (const fs::directory_entry & e : fs::directory_iterator(folder, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec) || e.path().extension() != ".gguf") continue;
+        const std::string p = e.path().u8string();
+        if (p == path) continue;
+        // Headers only, as above.
+        files.push_back({p, probe_gguf_header(p.c_str())});
+    }
+    return bmoe::server::drafter_for(model, files);
+}
+
 const CatalogEntry * ModelLibrary::find(const std::string & id) const {
     for (const CatalogEntry & e : catalog_)
         if (e.id == id) return &e;

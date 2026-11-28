@@ -1440,28 +1440,34 @@ reads the union of their experts:
 - **Held whole on the cores alone:** the step reads that union at the memory's own rate, and nobody
   has measured it.
 
-So the draft is a decision across loads (`choose_spec`). It is asked on the plan as it will serve, after
-every other rule, and only where:
-- the model has a draft: its own head today (`draft_source`). A separate drafter's file
-  (`ModelProfile::draft_file_bytes`) is a source this engine cannot open yet, and joins there when it
-  can;
+So the draft is a decision across loads (`choose_spec`), among the drafts the model has and none. It
+is asked on the plan as it will serve, after every other rule, and only where:
+- the model has a draft (`draft_options`): its own head, and a draft model the front-end paired with it
+  (`ModelProfile::drafter`). The server pairs the draft model of the model's folder from the headers
+  (`drafter_for`); with the CLI, a `--drafter-file` typed with `--auto` and without `--drafter` is the
+  pairing (`plan.facts.drafter`). The engine never looks for a file;
 - the side keeps a verify's reads in memory (`verify_reads_held`): the model held whole, or a device
   expert cache that holds `1 + draft` token cycles (`token_cycle_bytes`), the most a verify's union can
   read, on a device that shares the host's memory or on a card with memory of its own;
 - the front-end keeps records, the session decodes greedily (`temp` 0), and `spec`, `mtp-head` and
   `trial-spec` are not pinned.
 
-The width is `PlannerPolicy::draft_tokens` (3, the measured best above). A `--draft` typed by hand is
-the width armed instead, and a typed `--mtp` leaves the rule silent. Then:
-- **No side timed:** the load drafts (`spec = mtp`) and times its decode (`--trial-spec 1`).
-- **Only the draft timed:** the next load times the decode without it (`--trial-spec 0`).
-- **Both timed:** the draft stays only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
-  It is not free when it does not win: its draft context holds memory beside the model.
+The width is `PlannerPolicy::draft_tokens` (3, the measured best on the laptop above). A `--draft` typed
+by hand is the width armed instead, and a typed `--mtp` or `--drafter` leaves the rule silent. Timing
+3 against 5 as a further side would cost one more load per draft, and is not done; a rented 24 GB card
+measured a draft model at 5 (Qwen3.8-Flash-Next, 66 to 110-114 tok/s on code). Then, one side a load:
+- **A draft not timed:** the load arms it and times its decode: the head first (`--trial-spec 1`),
+  then the draft model (`--trial-spec 2`, `spec = drafter` with the paired file, on the device of a
+  device expert cache).
+- **Every draft timed, not the decode without one:** the next load times it (`--trial-spec 0`).
+- **All timed:** the fastest draft stays only where it decodes faster than none by
+  `PlannerPolicy::min_draft_win` (10%). A draft is not free when it does not win: its context holds
+  memory beside the model.
 
-A load whose draft fails to open counts against that side (`spec_unviable`), and the server reopens
-the other side; twice, and the draft is off for that model on that machine. The rates are kept as
-`MeasuredKnobs::spec_tps` and `no_spec_tps`, one pair per model and machine, whichever side served
-them. Only one decision is timed per load: a load that times the shared-memory device, the device
+A load whose draft fails to open counts against that draft (`spec_unviable`, `drafter_unviable`), and
+the server reopens without it; twice, and that draft is out for that model on that machine. The rates
+are kept as `MeasuredKnobs::spec_tps` (the head), `drafter_tps` and `no_spec_tps`, one set per model and
+machine, whichever side served them. Only one decision is timed per load: a load that times the shared-memory device, the device
 cache, its host call or the graph width, or checks the device's answers, leaves the draft for a later
 load. On the device-cache side the first load that drafts is the third at the soonest: the first
 times the cache and checks its answers, the second times the host call. The stream kept behind a device cache as its fallback never drafts.
@@ -1472,12 +1478,15 @@ for a draft of 3, and the session ran out of device memory reserving it (about 8
 layer input for the drafter, and 500 MiB more compute). Where the device's memory is its own, the draft
 is charged against the device expert cache (`draft_device_bytes`):
 - **weights:** the head's block inside the file (`ModelProfile::mtp_block_bytes`, which the probe sums
-  over the block's tensors), or a drafter's file (`draft_file_bytes`). A head in a file of its own is
-  placed by its own rule (`mtp-head-on-devices`);
+  over the block's tensors), or the draft model's file. A draft file the run names is placed by its own
+  rule (`mtp-head-on-devices`, `drafter-on-devices`), which charges it there;
 - **context:** what the front-end that opens the draft states (`ModelProfile::draft_context_bytes`), or
-  else one block's share of the target's KV on the devices plus the target's compute buffer moved to the
+  else derived from the placement and the headers: a share of the target's KV on the devices per draft
+  block (one for the head, the draft model's `block_count`), the target's compute buffer moved to the
   draft's width (`1 + draft`, at least the width a draft context is reserved at) along the fitter's
-  measured slope.
+  measured slope, and for a draft model the buffer the target keeps of the input of the layers it reads,
+  on its output device: F32, `target_layers × n_embd × n_batch` (llama.cpp's `layer_inp_dev`), where
+  the session's batch is its context. That buffer is the ~800 MiB the 24 GB card ran out on.
 
 A draft typed by hand is charged before the cache is sized. One the plan arms takes its bytes from the
 cache, and is not armed where what is left would not hold a verify. The side timed without a draft keeps

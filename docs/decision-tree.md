@@ -283,6 +283,7 @@ flowchart TD
     srv_config_paths["<b>srv.config.paths</b><br/>Paths that write are launch-only"]
     srv_load_auto["<b>srv.load.auto</b><br/>Plan before loading"]
     srv_load_projector["<b>srv.load.projector</b><br/>A vision model plans with its projector"]
+    srv_load_drafter["<b>srv.load.drafter</b><br/>A model plans with the draft model of its folder"]
     srv_load_plan_ok["<b>srv.load.plan-ok</b><br/>The plan replaces the plan layer"]
     srv_load_other_side["<b>srv.load.other-side</b><br/>A plan that names a side gets its other side"]
     srv_plan_other_same["<b>srv.plan.other-same</b><br/>The re-plan chose the same side: no fallback"]
@@ -299,6 +300,7 @@ flowchart TD
     srv_request_sampling["<b>srv.request.sampling</b><br/>A request's own sampling, when it sends any"]
     srv_layers -->|"API requests"| srv_api_think
     srv_load_auto -->|"planning"| srv_load_projector
+    srv_load_auto -->|"planning"| srv_load_drafter
     srv_load_auto -->|"planned"| srv_load_plan_ok
     srv_load_plan_ok -->|"ok"| srv_load_other_side
     srv_load_other_side -->|"names a side"| srv_plan_other_same
@@ -388,6 +390,15 @@ flowchart TD
 - code: `server/http_server.cpp` · `measure_plan`
 - condition: `if (cfg.mmproj.empty()) cfg.mmproj = lib.projector_for(cfg.model_path);`
 - The projector is the companion `.gguf` in the same folder.
+
+#### `srv.load.drafter` — A model plans with the draft model of its folder
+- parent: `srv.load.auto`
+- when: planning
+- code: `server/http_server.cpp` · `measure_plan`
+- condition: `if (!cfg.spec.enabled() && cfg.spec.drafter_file.empty()) cfg.spec.drafter_file = lib.drafter_for(cfg.model_path);`
+- Where no draft is named, the draft model whose header reads another model's layers and names this
+  model as its base (`drafter_for`) is paired. The plan weighs it (`plan.facts.drafter`, `plan.spec`)
+  and names it in the run only where it arms it.
 
 #### `srv.load.plan-ok` — The plan replaces the plan layer
 - parent: `srv.load.auto`
@@ -533,6 +544,7 @@ flowchart TD
     plan_facts_isolated["<b>plan.facts.isolated</b><br/>Devices probed out of process"]
     plan_facts_routing["<b>plan.facts.routing</b><br/>The model's own hit curve, when a routing record fits"]
     plan_facts_knobs["<b>plan.facts.knobs</b><br/>Verdicts measured on this machine, this engine version"]
+    plan_facts_drafter["<b>plan.facts.drafter</b><br/>A draft model named without --drafter is a paired one"]
     plan_facts_gate["<b>plan.facts.gate</b><br/>Time the gate GEMV (route-ahead only)"]
     plan_facts_storage["<b>plan.facts.storage</b><br/>Measure the storage"]
     plan_facts_backends["<b>plan.facts.backends</b><br/>Which backend of a card the fitter sees"]
@@ -583,7 +595,7 @@ flowchart TD
     plan_threads["<b>plan.threads</b><br/>Threads"]
     plan_threads_trial["<b>plan.threads.trial</b><br/>Time other thread counts on this load"]
     plan_spec["<b>plan.spec</b><br/>A model drafts where a verify's reads stay in memory"]
-    plan_spec_sides["<b>plan.spec.sides</b><br/>Draft or not: lost, measured, unmeasured"]
+    plan_spec_sides["<b>plan.spec.sides</b><br/>Which draft, or none: lost, untimed, measured"]
     plan_give_way -->|"cache under one cycle"| plan_give_way_checkpoints
     plan_give_way -->|"still under one cycle"| plan_give_way_ctx
     plan_tier -->|"a device qualifies"| plan_tier_rates
@@ -602,7 +614,8 @@ flowchart TD
     plan_spec -->|"asked"| plan_spec_sides
     plan_facts_isolated -.-> plan_facts_routing
     plan_facts_routing -.-> plan_facts_knobs
-    plan_facts_knobs -.-> plan_facts_gate
+    plan_facts_knobs -.-> plan_facts_drafter
+    plan_facts_drafter -.-> plan_facts_gate
     plan_facts_gate -.-> plan_facts_storage
     plan_facts_storage -.-> plan_facts_backends
     plan_facts_backends -.-> plan_layout_narrow
@@ -668,6 +681,14 @@ flowchart TD
   "measured" side reads them.
 - not found → every knob is unmeasured.
 - The match is exact: the hardware fingerprint and the engine version.
+
+#### `plan.facts.drafter` — A draft model named without `--drafter` is a paired one
+- parent: —
+- code: `core/src/plan/auto_plan.cpp` · `plan_on_facts`
+- condition: `if (!cfg.spec.drafter_file.empty() && !cfg.spec.is_drafter()) {`
+- A `drafter-file` with no `spec=drafter` (typed with `--auto`, or paired by the server) → the plan
+  starts from a configuration without it, and `ModelProfile::drafter` (its size, blocks and
+  `target_layers` from its header) makes it a side of `plan.spec`. The engine never looks for a file.
 
 #### `plan.facts.gate` — Time the gate GEMV (route-ahead only)
 - parent: —
@@ -1157,34 +1178,38 @@ flowchart TD
 #### `plan.spec` — A model drafts where a verify's reads stay in memory
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_spec`
-- condition: `if (source == DraftSource::none || !req.measure_knobs) return;`
-- condition: `if (!verify_reads_held(sized, m, draft, where)) return;`
+- condition: `if (all.empty() || !req.measure_knobs) return;`
+- condition: `if (!verify_reads_held(a.config, m, draft, a.where)) continue;`
 - Asked by `plan_run` on the plan as it will serve, after `plan.host-call`. The model has a draft
-  (`draft_source`: its own MTP head; a drafter's file, `ModelProfile::draft_file_bytes`, once this
-  engine opens one), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are not
-  pinned, no draft is armed, and this load times no other side and checks no device's answers.
+  (`draft_options`: its own MTP head, and a draft model the front-end paired with it,
+  `ModelProfile::drafter`), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are
+  not pinned, no draft is armed, and this load times no other side and checks no device's answers.
   Otherwise → nothing.
+- Each draft is armed as it would run: a draft model names the paired file and goes on the device
+  of a device expert cache (unless `drafter-on-devices` is pinned). On a device with memory of its
+  own the cache first gives the draft its bytes (`draft_device_bytes`: weights, KV, compute and the
+  target's layer input a drafter reads); a draft that leaves less than a verify's cycles is out.
 - `verify_reads_held`: the model held whole, or a device expert cache of at least `1 + draft` token
-  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → nothing. On a device with
-  memory of its own the cache first gives the draft its bytes (`draft_device_bytes`), and the rest has
-  to hold the verify.
+  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → that draft is out.
 - The width is `PlannerPolicy::draft_tokens` (3), or a typed `--draft`.
 - An armed draft that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
   says why.
 
-#### `plan.spec.sides` — Draft or not: lost, measured, unmeasured
+#### `plan.spec.sides` — Which draft, or none: lost, untimed, measured
 - parent: `plan.spec`
 - when: asked
 - code: `core/src/plan/planner.cpp` · `choose_spec`
-- condition: `if (lost(mk.spec_unviable)) {`
-- condition: `if (on > 0.0 && off > 0.0) {`
-- condition: `if (on <= 0.0) {`
+- condition: `if (alive.empty()) {`
+- condition: `if (a->o.tps <= 0.0) {`
+- condition: `if (off > 0.0) {`
 - condition: `if (lost(mk.no_spec_unviable)) {`
-- The draft failed to open twice → off.
-- Both sides timed → the draft only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
-- The draft not timed → `spec = mtp`, `trial.spec_side = 1`: this load drafts and times it.
-- The draft timed, not the decode without it → `trial.spec_side = 0`, unless loads without it failed
-  twice (→ the draft).
+- Every draft failed to open twice → off.
+- A draft not timed → this load arms it (`spec = mtp` or `drafter`, `trial.spec_side` 1 or 2) and
+  times it: one draft a load, the head first.
+- Every draft timed and the decode without one too → the fastest draft only where it decodes faster
+  than none by `PlannerPolicy::min_draft_win` (10%); otherwise off.
+- Every draft timed, not the decode without one → `trial.spec_side = 0`, unless loads without a draft
+  failed twice (→ the fastest draft).
 
 ## open — loading a model
 

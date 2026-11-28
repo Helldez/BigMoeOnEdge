@@ -75,6 +75,7 @@ struct GgufModelInfo {
     int n_block = 0;
     int n_nextn = 0;
     bool reads_target = false;
+    int n_target_layers = 0; // the length of `<arch>.target_layers`, 0 where it names none
     // `general.name`: the base model the conversion wrote this file from. A model and the companion
     // files of the same conversion (its projector) carry the same one, which is how they are paired.
     std::string name;
