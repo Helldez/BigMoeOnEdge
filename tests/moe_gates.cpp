@@ -2195,9 +2195,13 @@ int main(int argc, char ** argv) {
                                        s_cached_cpu);
                     }
                     // c) with speculation: a verify batch is a few positions wide, served by the same
-                    // slots, and greedy drafting accepts only what the target would have produced.
+                    // slots, and greedy drafting accepts only what the target would have produced. One draft
+                    // a step: the 4 MiB cache serves batches as wide as its slots hold a whole pass of
+                    // (llama_moe_cache batch_limit), two or three tokens of this model, and a wider verify
+                    // would take the wide path instead of the slots this gate is about.
                     RunConfig cached_spec = cached_s;
                     cached_spec.spec.source = DraftSource::ngram;
+                    cached_spec.spec.draft_max = 1;
                     std::string s_cached_spec;
                     if (!gen(cached_spec, s_cached_spec, err)) {
                         std::printf("[FAIL] G25c a device cache run with speculation failed: %s\n", err.c_str());

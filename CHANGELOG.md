@@ -185,6 +185,14 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   Unified-memory devices are unchanged.
 
 ### Changed
+- **The device cache serves a batch while its slots hold the whole pass, not up to a fixed 32 tokens.** A batch is
+  read from the cache while the experts it can touch in each layer of a group (`min(n_expert, tokens × top-k)`) times
+  the group's layers fit in the group's slots, one token always; past that a pass would evict its own early layers'
+  experts before any pass reads them again, so it takes the wide path, which reads the same misses and leaves the
+  slots alone. The limit follows the model and the cache (logged per group: "serves batches up to N tokens"), and
+  so does the memory a lent cache reserves for the batches it serves. The cache's hit-rate log now splits one-token
+  batches from the others (`ubatch = 1`, `ubatch > 1`) instead of at 8 times the top-k. A path choice only: every
+  gate's answer is unchanged.
 - **Smaller llama.cpp footprint for the device cache, the same behaviour.** The host address of device memory
   the host writes in place is now a function a backend exports through its registry
   (`ggml_backend_reg_get_proc_address`), not a new member of every ggml buffer interface: ggml's core headers

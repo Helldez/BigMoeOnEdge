@@ -1402,7 +1402,10 @@ experts): the stream decoded at 3.6-6.3 tok/s and the device from a 5 GB cache a
 identical; priced at 15.1. On a 12 GB phone the rule does not apply: its GPUs either do not
 reproduce the cores' result or do not run the model's expert matmul.
 
-A prompt wider than the cache serves (32 tokens) reads most of a layer's experts each pass; the ones
+A prompt wider than the cache serves reads most of a layer's experts each pass. The cache serves a batch while
+its slots hold the batch's whole pass, the experts it can touch in each of a layer group's layers
+(`min(n_expert, tokens × n_expert_used)` per layer), one token always; the log names the width each group
+serves. A wider pass would cycle the whole cache on every pass. The ones
 the cache does not hold are filled into the graph's copy on the same lanes, from the file, instead of
 being copied from the mapping one range at a time. On the same laptop, a 3022-token prompt: Qwen3.6-35B
 prefilled at 268 tok/s (59 before that fill, 538 streamed with the prefill device), Flash-Next at 123
