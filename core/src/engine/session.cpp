@@ -1485,9 +1485,6 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (device_cache_armed) cparams.moe_cache_cpu_share = cfg.moe.device_cache_cpu_share;
     // How the misses are served: all lossless, each compared with the plain upload by the gates.
     if (device_cache_armed) {
-        cparams.moe_cache_host_call = cfg.moe.device_cache_host_call;
-        cparams.moe_cache_cpu_threads = cfg.moe.device_cache_cpu_threads;
-        cparams.moe_cache_async_admit = cfg.moe.device_cache_async_admit;
         cparams.moe_cache_read_ahead = cfg.moe.device_cache_read_ahead;
         cparams.moe_cache_lend = cfg.moe.device_cache_lend;
     }
@@ -2516,8 +2513,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0 ||
-                  t.spec_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.spec_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2633,9 +2629,6 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
                           ? cfg.device_split.front().first.c_str()
                           : "the CPU");
-    else if (cfg.trial.host_call_side >= 0)
-        std::snprintf(what, sizeof(what), "%s the device cache's lookup inside the device's graph",
-                      cfg.trial.host_call_side == 1 ? "with" : "without");
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",

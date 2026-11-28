@@ -1382,8 +1382,8 @@ buffers instead took the memory from the cache: the same prefill, the decode 10%
 lending on this side; the mechanism itself serves any device, the misses written in place where the host
 writes the device's memory and uploaded on the backend's queue elsewhere (gate G25g runs it on a device
 of the second kind, G25h on one of the first where the build has one: misses filled in place, read ahead
-in the background, the last layer looked up by a host call, every background fill held back so that a
-lookup that reads a slot before its fill lands fails the gate).
+in the background, every background fill held back so that a lookup that reads a slot before its fill
+lands fails the gate).
 
 ### A model held in memory, on a device that shares it
 
@@ -1462,9 +1462,9 @@ A load whose draft fails to open counts against that side (`spec_unviable`), and
 the other side; twice, and the draft is off for that model on that machine. The rates are kept as
 `MeasuredKnobs::spec_tps` and `no_spec_tps`, one pair per model and machine, whichever side served
 them. Only one decision is timed per load: a load that times the shared-memory device, the device
-cache, its host call or the graph width, or checks the device's answers, leaves the draft for a later
-load. On the device-cache side the first load that drafts is the third at the soonest: the first
-times the cache and checks its answers, the second times the host call. The stream kept behind a device cache as its fallback never drafts.
+cache or the graph width, or checks the device's answers, leaves the draft for a later load. On the
+device-cache side the first load that drafts is the second at the soonest: the first times the cache
+and checks its answers. The stream kept behind a device cache as its fallback never drafts.
 
 **The draft's bytes on a card.** A draft opens as a context of its own after the target, so none of it
 is in the fitter's placement. On a rented 24 GB card, a 15.2-15.6 GB device expert cache left no room

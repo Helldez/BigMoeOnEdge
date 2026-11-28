@@ -577,44 +577,6 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("device-cache-host-call", "Device cache lookup in the graph", G::Cache, L::Experimental,
-                          "With a device expert cache, look up each layer's experts inside the "
-                          "device's graph, where the device can wait for the host, instead of splitting the graph "
-                          "at every layer.");
-        d.type = ParamType::Bool;
-        d.flag.clear();
-        d.switches = {{"--device-cache-host-call", "true"}, {"--no-device-cache-host-call", "false"}};
-        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_host_call; });
-        d.details = "Experimental: one graph per token on the graphics card instead of one pause per layer.";
-        t.push_back(d);
-    }
-    {
-        ParamDesc d = row("device-cache-cpu-threads", "Device cache CPU-miss threads", G::Cache, L::Experimental,
-                          "With --device-cache-host-call and --device-cache-cpu-share, the threads "
-                          "that compute the processor's share of the misses inside the device's graph. 0 keeps "
-                          "the split per layer.");
-        d.value_hint = "N";
-        bounds(d, 0, RunConfig::threads_max, "threads");
-        special(d, "0", "off");
-        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_cpu_threads; });
-        d.details =
-            "Experimental: the processor works on the experts the card misses while the card works on the rest.";
-        t.push_back(d);
-    }
-    {
-        ParamDesc d =
-            row("device-cache-async-admit", "Device cache admits in the background", G::Cache, L::Experimental,
-                "With --device-cache-host-call and --device-cache-cpu-threads, every miss of a "
-                "decoded token is computed by the processor, and a miss enters the device cache "
-                "in the background only if it is used more than the expert it evicts.");
-        d.type = ParamType::Bool;
-        d.flag.clear();
-        d.switches = {{"--device-cache-async-admit", "true"}, {"--no-device-cache-async-admit", "false"}};
-        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_async_admit; });
-        d.details = "Experimental: the card never waits for an expert to arrive; the processor computes it meanwhile.";
-        t.push_back(d);
-    }
-    {
         ParamDesc d =
             row("device-cache-lend", "Device cache lent to prompts", G::Cache, L::Experimental,
                 "Keep the device expert cache in the compute buffer, past what the answer's "
@@ -719,17 +681,6 @@ std::vector<ParamDesc> build() {
         bounds(d, -1, 1, "side");
         special(d, "-1", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.trial.shared_device_side; });
-        t.push_back(d);
-    }
-    {
-        ParamDesc d = row("trial-host-call", "Measure the device cache lookup", G::Cache, L::Experimental,
-                          "Time the decode of this load's side of the device expert cache's lookup, to be compared "
-                          "across loads: 1 with --device-cache-host-call, 0 without. -1 times neither. Changes no "
-                          "output; the plan sets it on a load that serves a side not yet measured on this machine.");
-        d.value_hint = "N";
-        bounds(d, -1, 1, "side");
-        special(d, "-1", "off");
-        bind_int(d, [](RunConfig & c) -> int & { return c.trial.host_call_side; });
         t.push_back(d);
     }
     {
