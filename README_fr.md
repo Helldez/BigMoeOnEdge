@@ -255,6 +255,16 @@ Décodage en tokens par seconde, `--auto`, un seul flux. Une plage est l'écart 
 | **GPU de bureau** (NVIDIA) | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, cache GPU | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM, cache GPU | 45-51 |
 
+**À venir**, dans des pull requests ouvertes et pas encore publiées. Ce sont des brouillons : les chiffres peuvent changer, et une installation ne les donne pas aujourd'hui.
+
+| Matériel | Modèle | Avant | Avec la PR | PR |
+|---|---|---:|---:|---|
+| Portable Apple silicon, 16 GB | Qwen3.8-Flash-Next 125B | 7-9 | 14 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Portable Apple silicon, 16 GB | Qwen3.6-35B-A3B | 18-24 | 28-29 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| GPU de bureau (NVIDIA), 12 GB | Qwen3.6-35B-A3B | 52 | 59 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Portable Apple silicon, 16 GB | Qwen3.6-35B-A3B, code, avec un modèle de brouillon | 24 | 38 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749), [#755](https://github.com/Helldez/BigMoeOnEdge/pull/755) |
+| Portable Apple silicon, 16 GB | Qwen3.6-35B-A3B, lecture d'un prompt de 3k tokens | 215 | 367 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749) |
+
 **Versions précédentes**, conservées jusqu'à ce qu'un test de version les mesure à nouveau :
 
 | Matériel | Mémoire | Modèle | Sur disque | Experts depuis | Décodage tok/s |

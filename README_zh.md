@@ -232,6 +232,16 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 | **桌面 GPU**（NVIDIA） | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 45-51 |
 
+**即将推出**：来自尚未发布的开放 pull request。它们是草稿：数字可能变化，目前安装的版本还达不到。
+
+| 硬件 | 模型 | 之前 | 使用该 PR | PR |
+|---|---|---:|---:|---|
+| Apple 芯片笔记本，16 GB | Qwen3.8-Flash-Next 125B | 7-9 | 14 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple 芯片笔记本，16 GB | Qwen3.6-35B-A3B | 18-24 | 28-29 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| 桌面 GPU（NVIDIA），12 GB | Qwen3.6-35B-A3B | 52 | 59 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple 芯片笔记本，16 GB | Qwen3.6-35B-A3B，代码，配合草稿模型 | 24 | 38 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749), [#755](https://github.com/Helldez/BigMoeOnEdge/pull/755) |
+| Apple 芯片笔记本，16 GB | Qwen3.6-35B-A3B，读取 3k token 的提示 | 215 | 367 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749) |
+
 **早期版本**，保留到发布测试重新测量为止：
 
 | 硬件 | 内存 | 模型 | 磁盘占用 | 专家读取自 | 解码 tok/s |

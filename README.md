@@ -247,6 +247,16 @@ Decode in tokens per second, `--auto`, one stream. A range is the spread across 
 | **Desktop GPU** (NVIDIA) | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, GPU cache | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 45-51 |
 
+**Coming**, in open pull requests not released yet. They are drafts: the figures can change, and an install does not give them today.
+
+| Hardware | Model | Before | With the PR | PR |
+|---|---|---:|---:|---|
+| Apple-silicon laptop, 16 GB | Qwen3.8-Flash-Next 125B | 7-9 | 14 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple-silicon laptop, 16 GB | Qwen3.6-35B-A3B | 18-24 | 28-29 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Desktop GPU (NVIDIA), 12 GB | Qwen3.6-35B-A3B | 52 | 59 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple-silicon laptop, 16 GB | Qwen3.6-35B-A3B, code, with a draft model | 24 | 38 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749), [#755](https://github.com/Helldez/BigMoeOnEdge/pull/755) |
+| Apple-silicon laptop, 16 GB | Qwen3.6-35B-A3B, reading a 3k-token prompt | 215 | 367 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749) |
+
 **Earlier releases**, kept until a release test measures them again:
 
 | Hardware | Memory | Model | On disk | Experts from | Decode tok/s |

@@ -228,6 +228,16 @@ Apple silicon の Mac では GPU が CPU と同じ RAM を使うため、階層�
 | **デスクトップ GPU**（NVIDIA） | 12 GB + 61 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 99-102 |
 |  |  | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 45-51 |
 
+**今後のリリース予定**：まだリリースされていないオープンなプルリクエストでの計測です。ドラフトのため数値は変わる可能性があり、現在のインストールではこの速度は出ません。
+
+| ハードウェア | モデル | 適用前 | PR 適用時 | PR |
+|---|---|---:|---:|---|
+| Apple シリコンのノート PC、16 GB | Qwen3.8-Flash-Next 125B | 7-9 | 14 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple シリコンのノート PC、16 GB | Qwen3.6-35B-A3B | 18-24 | 28-29 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| デスクトップ GPU（NVIDIA）、12 GB | Qwen3.6-35B-A3B | 52 | 59 | [#741](https://github.com/Helldez/BigMoeOnEdge/pull/741) |
+| Apple シリコンのノート PC、16 GB | Qwen3.6-35B-A3B、コード、ドラフトモデル併用 | 24 | 38 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749), [#755](https://github.com/Helldez/BigMoeOnEdge/pull/755) |
+| Apple シリコンのノート PC、16 GB | Qwen3.6-35B-A3B、3k トークンのプロンプト読み込み | 215 | 367 | [#749](https://github.com/Helldez/BigMoeOnEdge/pull/749) |
+
 **以前のリリース**（リリーステストで再計測されるまで掲載）：
 
 | ハードウェア | メモリ | モデル | ディスク上のサイズ | エキスパートの読み出し元 | デコード tok/s |

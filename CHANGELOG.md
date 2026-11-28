@@ -22,7 +22,8 @@ Semantic Versioning.
   12 GB and a 24 GB card, with no regression. Qwen3.6-35B-A3B decodes at 99-102 tok/s with a GPU cache
   on the 12 GB card and at 156 with the whole model on the 24 GB one; Qwen3.8-Flash-Next at 45-51 from
   RAM on the 12 GB card, and at 16-19 streamed from the drive on the 24 GB card with 23 GB of RAM;
-  Inkling 2 Mini at 61 with the whole model on the 24 GB card.
+  Inkling 2 Mini at 61 with the whole model on the 24 GB card. A "Coming" block lists what open draft pull requests
+  measure (#741, #749, #755), marked as not released.
 - **[comparison.md](docs/comparison.md) is checked again (2026-11-28).** Strata no longer runs
   DeepSeek V4.1 Flash, spreads three models to the SSD and loads a `.gguf` of your own. Lucebox
   streams DeepSeek V4.1 Flash from the SSD and picks a launch profile from the GPUs it finds. colibri
