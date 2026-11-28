@@ -23,9 +23,16 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
     file is loaded and what context it drafts in, in one module (`core/src/engine/draft_driver`).
     A kind the driver learns with a submodule bump needs no change here. A file that is not a draft,
     or whose vocabulary is not the model's, is refused at load.
-  - **Placement:** `--drafter-on-devices` puts the draft model on the devices the model's layers
-    are on, and with `--auto` the plan decides it by the rule that already places an MTP head file,
-    from the file's size alone.
+  - **Placement:** `--drafter-on-devices` puts the draft model on the devices, and `--draft-device NAME`
+    on one of them. With `--auto` the plan puts a draft file (a draft model or an MTP head file) on the
+    device that computes dense weights fastest, by its measured rate, whatever side serves. Beside a
+    device expert cache the cache gives it room. Beside the fitter's layers it takes the room the plan
+    leaves free, or room whole layers' experts give by moving to the host. Either way the room is taken
+    only where the faster pass is worth more than what it would have served; otherwise it drafts on the
+    host. On a rented 32 GB card serving Qwen3.8-Flash-Next from the fitter's placement, the plan had
+    left the draft model on the host, where it cost 10-15 ms against a 5.9 ms target step (code 56.2
+    tok/s drafting against 85.7 without, prose 41.9 against 98.7)
+    ([hardware-planning.md](docs/hardware-planning.md#where-a-draft-file-is-computed)).
   - **`--mtp-p-min`** applies to a draft model too: it is the draft's own confidence floor.
   - **What is proven, and what is not:** a new test (`drafter_session`) runs a streamed session over
     the tiny MoE fixture with a tiny drafter generated for it, through draft, verify and rollback

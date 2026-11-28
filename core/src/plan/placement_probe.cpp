@@ -157,12 +157,13 @@ Placement probe_placement(const char * model_path,
     const bool own_file = drafts && spec->has_draft_file();
     mparams.load_mtp = spec && spec->head_in_model();
     llama_model_params dmparams = llama_model_default_params();
+    std::vector<ggml_backend_dev_t> draft_devices; // the one device a draft is named onto, if any
     llama_context_params dcparams = cparams;
     common_fit_extra_model draft{};
     // A draft file the driver has no draft for is the session's error to report (Session::open).
     const bool fit_draft = drafts && kind.known();
     if (fit_draft) {
-        dmparams = detail::draft_file_model_params(kind, *spec, mparams.devices);
+        dmparams = detail::draft_file_model_params(kind, *spec, mparams.devices, draft_devices);
         // A head inside the model is the target's own load, on the target's placement.
         if (!own_file) dmparams.n_gpu_layers = llama_model_default_params().n_gpu_layers;
         dcparams = detail::draft_context_params(kind, *spec, cparams);
@@ -180,6 +181,7 @@ Placement probe_placement(const char * model_path,
         return pl;
     }
     pl.fitted = true;
+    pl.fitted_with_draft = fit_draft;
     pl.outcome = st == COMMON_PARAMS_FIT_STATUS_SUCCESS
                      ? "the capacity fitter found a placement that is projected to fit"
                      : "the capacity fitter could not make the model fit the devices";

@@ -122,14 +122,16 @@ own (`convert_hf_to_gguf.py --mtp`), and `--mtp-head FILE` opens such a file as 
 the way llama.cpp's speculative driver opens a draft head: the head drafts in its own context, which
 reads the target's hidden states, while the target is the model file as it is. The head is loaded
 whole, and is not the streamer's (one layer, small beside the model). Where it lives is the plan's
-decision (`mtp-head-on-devices`): where the plan arms a device expert cache (a device computes
-this model's experts faster than the host by the margin), the head follows the experts to that
-device and takes its bytes from the cache, so the target keeps the placement it was fitted;
-otherwise it drafts on the host. Measured why on a 12 GB card with 8 slow cores: the head drafting
-on the host cost 35 ms of a 65 ms token and lost to no head at all (9.9 against 15.5 tok/s).
-Placed on a device at llama.cpp's defaults instead, before this rule, it was measured worse: the
-fitter gave the target 3.2 GB of a 24 GB card to make room for it, and the draft's first read of
-the target's hidden states crashed; the plan now never lets the head take from the target's layers.
+decision (`mtp-head-on-devices`), the rule that places every draft file
+([hardware-planning.md](hardware-planning.md#where-a-draft-file-is-computed)): it goes on the device
+that computes dense weights fastest, beside a device expert cache whose bytes it takes, or beside the
+fitter's layers in the room the plan leaves free, or in room whole layers' experts give by moving to
+the host where the faster pass is worth more; otherwise it drafts on the host. Measured why on a 12 GB
+card with 8 slow cores: the head drafting on the host cost 35 ms of a 65 ms token and lost to no head
+at all (9.9 against 15.5 tok/s). Placed on a device at llama.cpp's defaults instead, before this rule,
+it was measured worse: the fitter gave the target 3.2 GB of a 24 GB card to make room for it, and the
+draft's first read of the target's hidden states crashed. So the plan never takes a layer's dense part
+from the device for a draft: only experts move, and every layer stays where the fitter put it.
 
 The converter needs the checkpoint, and the head is a small part of it, so
 `scripts/fetch-hf-subset.py` fetches only the tensors named by its patterns with HTTP range requests

@@ -524,6 +524,12 @@ struct SpecConfig {
     // host (false). The same decision as mtp_head_on_devices, taken by the same planner rule.
     bool drafter_on_devices = false;
 
+    // MTP head file or drafter, on the devices: the one device that computes the draft, by its
+    // backend name. Empty leaves it to llama.cpp, which spreads it over the devices the target uses by
+    // their free memory. The planner names the device that computes dense weights fastest where there
+    // are several, since a draft runs every verify step and a slower card or a split costs each one.
+    std::string draft_device;
+
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.
     // Past the source's acceptance horizon the extra drafts are rejected and paid for anyway, which

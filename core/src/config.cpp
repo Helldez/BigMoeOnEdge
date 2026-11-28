@@ -249,6 +249,9 @@ ValidationResult validate(const RunConfig & cfg) {
                     "model and comes in a file of its own.");
     if (cfg.spec.drafter_on_devices && !cfg.spec.is_drafter())
         return fail("{drafter-on-devices} places the draft model of {spec=drafter}: it needs {spec=drafter}");
+    if (!cfg.spec.draft_device.empty() && !cfg.spec.draft_file_on_devices())
+        return fail("{draft-device} names the device a draft file is loaded on: it needs {drafter-on-devices} or "
+                    "{mtp-head-on-devices}");
     if (cfg.spec.enabled() && cfg.sampling.temp > 0.0f) {
         return fail("{spec} needs greedy decoding ({temp} at 0): a draft is checked against the single most likely "
                     "token, which is only the answer when nothing is sampled.");

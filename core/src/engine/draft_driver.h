@@ -19,6 +19,7 @@
 #include "speculative.h"
 
 #include <string>
+#include <vector>
 
 namespace bmoe::detail {
 
@@ -40,8 +41,10 @@ DraftKind draft_kind(const SpecConfig & spec);
 
 // A draft file's model parameters: whole and resident, on the devices in `devices` (the target's own
 // list, so the file cannot land on a device the plan left out) or on the host.
-llama_model_params
-draft_file_model_params(const DraftKind & kind, const SpecConfig & spec, ggml_backend_dev_t * devices);
+llama_model_params draft_file_model_params(const DraftKind & kind,
+                                           const SpecConfig & spec,
+                                           ggml_backend_dev_t * devices,
+                                           std::vector<ggml_backend_dev_t> & one);
 
 // The draft context's parameters, from the target's: its own narrow graph and KV, no rollback
 // snapshots (the target is the one that speculates) and no device expert cache.

@@ -1218,10 +1218,15 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
             return o.fail("{drafter-file} names a file llama.cpp's speculative driver has no draft for (its header "
                           "is neither a draft model's nor an MTP head's): " +
                           file);
-        // The draft weights whole and resident, where the plan put them: on the devices the target's
-        // layers are on (their bytes taken from the device expert cache) or on the host. Weights the
-        // streamer does not serve, small beside the model, computed for a draft step at a time.
-        const llama_model_params hp = detail::draft_file_model_params(draft_kind, cfg.spec, mparams.devices);
+        // The draft weights whole and resident, where the plan put them: on the device that computes
+        // them fastest, or the devices the target's layers are on, or the host. Weights the streamer
+        // does not serve, small beside the model, computed for a draft step at a time.
+        if (cfg.spec.draft_file_on_devices() && !cfg.spec.draft_device.empty() &&
+            !ggml_backend_dev_by_name(cfg.spec.draft_device.c_str()))
+            return o.fail("{draft-device} names no device this build has: " + cfg.spec.draft_device);
+        std::vector<ggml_backend_dev_t> draft_devices;
+        const llama_model_params hp =
+            detail::draft_file_model_params(draft_kind, cfg.spec, mparams.devices, draft_devices);
         llama_model * h = llama_model_load_from_file(file.c_str(), hp);
         if (!h)
             return o.fail(std::string("could not load ") + (cfg.spec.is_mtp() ? "{mtp-head}" : "{drafter-file}") +

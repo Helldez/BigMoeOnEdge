@@ -4100,6 +4100,144 @@ int main() {
                   "device tier, drafter too big for the cache: it drafts on the host and the cache is whole");
         }
 
+        // A draft file goes on the device that computes it fastest whatever side serves (place_draft_file).
+        // Beside the cache with a routing record, the cache's bytes are weighed against the faster pass:
+        // where a verify would miss most of what it reads at the cache that is left, the draft drafts on
+        // the host; where the curve is flat there, the cache gives them.
+        {
+            ModelProfile drafted = model;
+            drafted.draft_file_bytes = 2 * GiB;
+            drafted.hit_curve.measured = true;
+            drafted.hit_curve.decode_tokens = 256;
+            drafted.hit_curve.points = {{0, 0.0}, {1 * MiB, 0.9}, {model.expert_bytes, 0.95}};
+            RunConfig cfg = base_cfg();
+            cfg.spec.source = DraftSource::drafter;
+            cfg.spec.drafter_file = "drafter.gguf";
+            const uint32_t w = (uint32_t) (1 + cfg.spec.draft_max);
+            VerifyCurve steep;
+            steep.width = w;
+            steep.bytes_per_step = 4 * model.token_cycle_bytes;
+            steep.curve.measured = true;
+            steep.curve.points = {{0, 0.0}, {8 * GiB, 0.0}, {9 * GiB, 0.99}};
+            drafted.verify_curves = {steep};
+            const Plan lose = plan_run(cfg, card, drafted, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * hd = find(lose, "drafter-on-devices");
+            check(hd && hd->value == "false" && !lose.config.spec.drafter_on_devices &&
+                      lose.config.moe.device_cache_mb == (int) (9 * 1024),
+                  "draft home, the cache's bytes serve more than the faster pass saves: the host, the cache whole",
+                  hd ? hd->reason : "no decision");
+            VerifyCurve flat = steep;
+            flat.curve.points = {{0, 0.0}, {1 * MiB, 0.99}};
+            drafted.verify_curves = {flat};
+            const Plan win = plan_run(cfg, card, drafted, half, PlanRequest{}, PlannerPolicy::defaults());
+            hd = find(win, "drafter-on-devices");
+            check(hd && hd->value == "true" && win.config.spec.drafter_on_devices &&
+                      win.config.moe.device_cache_mb == (int) (7 * 1024),
+                  "draft home, the faster pass worth more than the bytes: on the card, out of the cache",
+                  hd ? hd->reason : "no decision");
+        }
+
+        // Beside the fitter's layers (the side measured faster here): on the card in the room the plan
+        // leaves free, or, short of it, in room whole layers' experts give by moving to the host, where the
+        // faster pass is worth more than what a verify then reads on the host. Measured on a rented 32 GB
+        // card: a draft model the plan left on the host there cost 10-15 ms of a 5.9 ms step.
+        {
+            ModelProfile drafted = model;
+            drafted.draft_file_bytes = 1 * GiB;
+            drafted.drafter.n_block = 1;
+            drafted.knobs.device_cache_tps = 1.6;
+            drafted.knobs.no_device_cache_tps = 30.0;
+            RunConfig cfg = base_cfg();
+            cfg.spec.source = DraftSource::drafter;
+            cfg.spec.drafter_file = "drafter.gguf";
+            Placement roomy = half;
+            roomy.fitted_with_draft = true;
+            roomy.device_spare = {{gpu.name, 4 * GiB}};
+            const Plan fits = plan_run(cfg, card, drafted, roomy, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * hd = find(fits, "drafter-on-devices");
+            check(fits.config.moe.device_cache_mb == 0 && hd && hd->value == "true" &&
+                      fits.config.spec.drafter_on_devices && fits.config.buft_overrides.size() == 24 &&
+                      fits.config.spec.draft_device.empty() && validate(fits.config).ok,
+                  "draft home, the fitter's side with room on the card: on the card, no layer moved",
+                  hd ? hd->reason : "no decision");
+
+            Placement full = roomy;
+            full.device_spare.clear();
+            const Plan moved = plan_run(cfg, card, drafted, full, PlanRequest{}, PlannerPolicy::defaults());
+            hd = find(moved, "drafter-on-devices");
+            check(moved.config.moe.device_cache_mb == 0 && hd && hd->value == "true" &&
+                      moved.config.spec.drafter_on_devices && moved.config.buft_overrides.size() > 24 &&
+                      moved.placement.host_expert_layers.size() == moved.config.buft_overrides.size() &&
+                      validate(moved.config).ok,
+                  "draft home, the fitter's side with no room: layers' experts move to the host to make it",
+                  hd ? hd->reason : "no decision");
+
+            // A host nearly as fast on dense weights and slow on experts: the pass saves less than what a
+            // verify would read on the host, so the draft stays there and the layers where they are.
+            HardwareProfile even = card;
+            even.host_dense_gibs = 850.0;
+            even.host_expert_gibs = 20.0;
+            even.devices[0].dense_gibs = 881.0;
+            even.devices[0].expert_gibs = 881.0;
+            const Plan kept = plan_run(cfg, even, drafted, full, PlanRequest{}, PlannerPolicy::defaults());
+            hd = find(kept, "drafter-on-devices");
+            check(kept.config.moe.device_cache_mb == 0 && hd && hd->value == "false" &&
+                      !kept.config.spec.drafter_on_devices && kept.config.buft_overrides.size() == 24,
+                  "draft home, the fitter's side, the move costs more than the pass saves: the host",
+                  hd ? hd->reason : "no decision");
+
+            // The caller's placement stands, either way.
+            PlanRequest pinned;
+            pinned.pinned.push_back("drafter-on-devices");
+            const Plan mine = plan_run(cfg, card, drafted, full, pinned, PlannerPolicy::defaults());
+            check(!find(mine, "drafter-on-devices") && !mine.config.spec.drafter_on_devices &&
+                      mine.config.buft_overrides.size() == 24,
+                  "draft home, pinned off: the host, nothing moved");
+
+            // Two cards: the one that computes dense weights faster is named, and only it.
+            HardwareProfile two = card;
+            ComputeDevice slow = two.devices[0];
+            slow.name = "slow0";
+            slow.memory_bandwidth_gibs = 300.0;
+            two.devices.push_back(slow);
+            Placement both = roomy;
+            both.device_split = {{"slow0", 10}, {gpu.name, (uint32_t) model.n_layer + 1 - 10}};
+            both.device_spare = {{"slow0", 4 * GiB}, {gpu.name, 4 * GiB}};
+            const Plan named = plan_run(cfg, two, drafted, both, PlanRequest{}, PlannerPolicy::defaults());
+            check(named.config.spec.drafter_on_devices && named.config.spec.draft_device == gpu.name &&
+                      validate(named.config).ok,
+                  "draft home, two cards: the faster one is named", named.config.spec.draft_device);
+
+            // A draft model paired with the model, armed by the draft decision: the same home.
+            ModelProfile paired = drafted;
+            paired.draft_file_bytes = 0;
+            paired.drafter.path = "/m/drafter.gguf";
+            paired.drafter.bytes = 1 * GiB;
+            paired.drafter.target_layers = 5;
+            paired.n_embd = 2048;
+            paired.hit_curve.measured = true;
+            paired.hit_curve.decode_tokens = 256;
+            paired.hit_curve.points = {{0, 0.0}, {1 * MiB, 0.9}, {model.expert_bytes, 0.95}};
+            PlanRequest keep;
+            keep.measure_knobs = true;
+            Placement big_spare = half;
+            big_spare.device_spare = {{gpu.name, 8 * GiB}};
+            const Plan armed = plan_run(base_cfg(), card, paired, big_spare, keep, PlannerPolicy::defaults());
+            check(armed.config.spec.is_drafter() && armed.config.spec.drafter_on_devices &&
+                      armed.config.trial.spec_side == KnobTrialConfig::spec_side_drafter &&
+                      find(armed, "drafter-on-devices") && validate(armed.config).ok,
+                  "draft home, a paired draft model on the fitter's side: armed on the card",
+                  find(armed, "spec") ? find(armed, "spec")->reason : std::string("no spec decision"));
+            // No room beside the plan: the plan made again with it armed moves layers' experts for it, and
+            // that plan is the one that serves.
+            const Plan made = plan_run(base_cfg(), card, paired, half, keep, PlannerPolicy::defaults());
+            check(made.config.spec.is_drafter() && made.config.spec.drafter_on_devices &&
+                      made.config.trial.spec_side == KnobTrialConfig::spec_side_drafter &&
+                      made.config.buft_overrides.size() > 24 && find(made, "spec") && validate(made.config).ok,
+                  "draft home, a paired draft model with no room: armed on the card, layers' experts moved",
+                  std::to_string(made.config.buft_overrides.size()) + " overrides");
+        }
+
         // The projector goes on the device with every layer: its bytes come off the card's spare
         // before the cache does, and the host's ledger has no row for it.
         {
@@ -5358,6 +5496,10 @@ int main() {
                   side_of(l2) == KnobTrialConfig::spec_side_drafter && validate(l2.config).ok,
               "which draft, load 2: the paired draft model, timed",
               find(l2, "spec") ? find(l2, "spec")->reason : std::string("no spec decision"));
+        // Unified memory: one pool, so where the draft model is computed is not a placement question.
+        check(!l2.config.spec.drafter_on_devices && l2.config.spec.draft_device.empty() &&
+                  !find(l2, "drafter-on-devices"),
+              "which draft, unified memory: the draft model's home is left as it was");
         ModelProfile m3 = m2;
         m3.knobs.drafter_tps = 112.0;
         const Plan l3 = plan_with(m3);

@@ -210,6 +210,9 @@ int main() {
     expect_flag({"--drafter"}, [](const RunConfig & c) { return c.spec.source == DraftSource::drafter; });
     expect_flag({"--drafter-file", "d.gguf"}, [](const RunConfig & c) { return c.spec.drafter_file == "d.gguf"; });
     expect_flag({"--drafter-on-devices"}, [](const RunConfig & c) { return c.spec.drafter_on_devices; });
+    expect_flag({"--drafter-on-devices", "--no-drafter-on-devices"},
+                [](const RunConfig & c) { return !c.spec.drafter_on_devices; });
+    expect_flag({"--draft-device", "CUDA1"}, [](const RunConfig & c) { return c.spec.draft_device == "CUDA1"; });
     expect_flag({"--draft", "5"}, [](const RunConfig & c) { return c.spec.draft_max == 5; });
     expect_flag({"--mtp-p-min", "0.6"}, [](const RunConfig & c) { return c.spec.draft_p_min == 0.6f; });
     expect_flag({"--ngram-min-match", "4"}, [](const RunConfig & c) { return c.spec.ngram_min_match == 4; });

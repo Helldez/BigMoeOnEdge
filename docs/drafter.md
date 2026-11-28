@@ -71,14 +71,21 @@ reason the draft context is created with the target context as its `ctx_other`.
 |---|---|
 | `--draft N` | Tokens drafted per verify batch, `1` to `8`. The driver clamps it to the block the drafter was trained on. |
 | `--mtp-p-min F` | Stops a draft at the first token the drafter gives less than this probability (a DSpark drafter with a confidence head uses that head). `0`, the default, always drafts the full width. |
-| `--drafter-on-devices` | The draft model's weights on the devices the model's layers are on, instead of the host. With `--auto` the plan sets it. |
+| `--drafter-on-devices`, `--no-drafter-on-devices` | The draft model's weights on the devices instead of the host. With `--auto` the plan sets it. |
+| `--draft-device NAME` | With the draft on the devices, the one device that computes it. Empty spreads it over the model's devices. With `--auto` the plan names the fastest where there are several. |
 | greedy decoding | Required, as for every source: `validate()` rejects speculation with `--temp` above 0. |
 
 `--drafter-on-devices` is the same decision as `mtp-head-on-devices`, taken by the same planner
-rule under its own name: where the plan arms a device expert cache, a draft file follows the experts
-to that device and takes its bytes from the cache, never from the layers the fitter placed, and
-where it does not fit above one token cycle it drafts on the host and the plan says so. The rule
-knows the file's size and nothing about what is in it.
+rule under its own name ([hardware-planning.md](hardware-planning.md#where-a-draft-file-is-computed)).
+A draft runs every verify step, so it goes on the device that computes dense weights fastest,
+whatever side serves. Beside a device expert cache it takes its bytes from the cache. Beside the
+fitter's layers it takes the room the plan leaves free there, and short of that, room whole layers'
+experts give by moving to the host. Either way the room is taken only where the draft's faster pass
+is worth more than what the room would have served. It drafts on the host only where no device has
+the room, and the plan says so. Measured why on a rented 32 GB card: with Qwen3.8-Flash-Next served
+from the fitter's placement, a draft model the plan left on the host cost 10-15 ms against a 5.9 ms
+target step, and drafting took the decode from 85.7 to 56.2 tok/s on code and from 98.7 to 41.9 on
+prose. The rule knows the file's size and the device's rates, and nothing about what is in the file.
 
 The draft width stops at `8` for every source. It is an evidence boundary, not a physical one
 (`SpecConfig::draft_max_limit`): a block drafter is trained on wider blocks than that, and raising

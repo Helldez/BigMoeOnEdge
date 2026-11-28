@@ -537,6 +537,12 @@ int main() {
         c.spec.draft_p_min = 1.5f;
         expect_fail("a confidence floor above 1 is rejected for a drafter", c);
         c.spec.draft_p_min = 0.0f;
+        c.spec.draft_device = "CUDA0";
+        expect_fail("a draft device for a drafter left on the host is rejected", c);
+        c.spec.drafter_on_devices = true;
+        expect_ok("a draft device for a drafter on the devices", c);
+        c.spec.drafter_on_devices = false;
+        c.spec.draft_device.clear();
         c.spec.source = DraftSource::mtp;
         expect_fail("a drafter file with the MTP source is rejected", c);
         c.spec.source = DraftSource::none;

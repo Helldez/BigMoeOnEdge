@@ -1329,12 +1329,11 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("mtp-head-on-devices", "MTP head on devices", G::Speculation, L::Advanced,
-                          "MTP with a head file: load the head on the devices the model's layers are on, "
-                          "instead of the host. Set by the hardware planner where the device computes the "
-                          "experts faster and the head fits beside the expert cache, whose bytes it takes.");
+                          "MTP with a head file: load the head on the devices instead of the host. Set by the "
+                          "hardware planner as it places a draft model (drafter-on-devices).");
         d.type = ParamType::Bool;
         d.flag.clear();
-        d.switches = {{"--mtp-head-on-devices", "true"}};
+        d.switches = {{"--mtp-head-on-devices", "true"}, {"--no-mtp-head-on-devices", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.spec.mtp_head_on_devices; });
         t.push_back(d);
     }
@@ -1350,13 +1349,24 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("drafter-on-devices", "Draft model on devices", G::Speculation, L::Advanced,
-                          "Drafter only: load the draft model on the devices the model's layers are on, "
-                          "instead of the host. Set by the hardware planner where the draft model fits "
-                          "beside the expert cache, whose bytes it takes.");
+                          "Drafter only: load the draft model on the devices instead of the host. Set by the "
+                          "hardware planner on whatever side serves: on the device that computes dense weights "
+                          "fastest, in room beside the plan, or room the expert cache or the fitter's layers "
+                          "give where the draft's faster pass is worth more.");
         d.type = ParamType::Bool;
         d.flag.clear();
-        d.switches = {{"--drafter-on-devices", "true"}};
+        d.switches = {{"--drafter-on-devices", "true"}, {"--no-drafter-on-devices", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.spec.drafter_on_devices; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("draft-device", "Draft device", G::Speculation, L::Advanced,
+                          "MTP head file or drafter on the devices: the one device that computes it, by its "
+                          "backend name. Empty spreads it over the model's devices. Set by the hardware planner "
+                          "to the device that computes dense weights fastest where there are several.");
+        d.type = ParamType::Text;
+        d.value_hint = "DEVICE";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.spec.draft_device; });
         t.push_back(d);
     }
     {

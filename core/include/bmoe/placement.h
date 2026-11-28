@@ -75,6 +75,11 @@ struct Placement {
     // device's `device_spare`. Zero without a projector, or where no device has memory of its own.
     uint64_t device_projector_bytes = 0;
 
+    // Whether the fitter was given the run's draft (its file and context, engine/draft_driver.h) and
+    // placed the target around it: the draft's context is then in the figures above, and only what a
+    // move of its weights to a device adds is not (place_draft_file).
+    bool fitted_with_draft = false;
+
     // True when the fitter had a device to place on, but one whose memory is the host's - so its
     // capacity arithmetic counted the same pool twice and its placement was NOT applied. Carried so
     // the plan can say that out loud instead of reporting "no device" on a machine that has one.

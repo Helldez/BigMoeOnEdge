@@ -566,6 +566,7 @@ flowchart TD
     plan_tier_measured["<b>plan.tier.measured</b><br/>Cache on the device or not: priced, then measured"]
     plan_tier_arm["<b>plan.tier.arm</b><br/>Arm the device cache"]
     plan_width["<b>plan.width</b><br/>The graph width (n_ubatch)"]
+    plan_draft_home["<b>plan.draft-home</b><br/>A draft file goes on the device that computes it fastest"]
     plan_width_bound["<b>plan.width.bound</b><br/>The device bound or the full width: weigh across loads"]
     plan_width_loads["<b>plan.width.loads</b><br/>Narrow (layers on the device) or wide (prompts faster)"]
     plan_regime["<b>plan.regime</b><br/>Does the model fit, stream its experts, or not even hold its dense part?"]
@@ -632,7 +633,8 @@ flowchart TD
     plan_host_call -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
-    plan_width -.-> plan_regime
+    plan_width -.-> plan_draft_home
+    plan_draft_home -.-> plan_regime
     plan_regime -.-> plan_placement
     plan_placement -.-> plan_layers_home
     plan_layers_home -.-> plan_staging
@@ -888,7 +890,7 @@ flowchart TD
 - condition: `if (tier.resplit) {`
 - Every expert layer goes to the host overrides, and the cache is armed on the device.
 - A better split across cards is applied when it holds more.
-- An MTP head goes on the devices when it fits with one token cycle to spare.
+- A draft file the run names is placed later, by `plan.draft-home`.
 - Overlap, two-wave and the overlap trial go off: they do not combine with a device cache.
 
 #### `plan.width` — The graph width (`n_ubatch`)
@@ -901,6 +903,24 @@ flowchart TD
 - It is bounded at 8192 when a device computes the graph, and never narrower than 512 or an
   image's floor.
 - Pinned, or the placement unprobed → the default.
+
+#### `plan.draft-home` — A draft file goes on the device that computes it fastest
+- parent: —
+- code: `core/src/plan/planner.cpp` · `place_draft_file`
+- condition: `if (!knob.on_devices || s.req.is_pinned(knob.param)) return;`
+- Asked after `plan.width`, on any side that serves, where the run names a draft file (an MTP head
+  file, a draft model) and its placement (`mtp-head-on-devices`, `drafter-on-devices`) is not pinned.
+  Where every device reads the host's memory → nothing: one pool.
+- The devices weighed: with memory of their own, faster than the host on dense weights (the measured
+  rates, `dense_rates`), fastest first; a pinned `draft-device` is the only one.
+- Beside a device expert cache: the cache gives the weights (on several cards, by that card's share)
+  and keeps one token cycle. With a routing record, the verify at the cache that is left is priced
+  against the faster pass, and where it costs more → the host. Without one → the device.
+- Elsewhere: in the room the plan leaves free on the device (`Placement::device_spare`); short of it,
+  whole layers' experts there move to the host, lowest first, priced as a verify's share of them read
+  on the host (and from flash where the host would hold more than it may). The cheapest device whose
+  pass and room cost less than the host's pass → there; otherwise → the host.
+- Several devices of their own → `draft-device` names the one chosen.
 
 #### `plan.width.bound` — The device bound or the full width: weigh across loads
 - parent: `plan.width`
@@ -1202,9 +1222,12 @@ flowchart TD
   Otherwise → nothing.
 - Each draft is armed as it would run, at each width it may run at (a typed `--draft`; the width its
   load was measured at; else `draft_tokens` 3 and `draft_tokens_wide` 5): a draft model names the
-  paired file and goes on the device of a device expert cache (unless `drafter-on-devices` is
-  pinned). On a device with memory of its own the cache first gives the draft its bytes
-  (`draft_device_bytes`).
+  paired file and goes where `plan.draft-home` would put it (unless `drafter-on-devices` is pinned).
+  Beside a card's device expert cache both homes are priced, the device's pass with the cache that is
+  left and the host's with the whole cache, and the faster kept (unpriced → the device); the cache
+  gives the draft its bytes (`draft_device_bytes`). Elsewhere, on a machine with a device of its own,
+  the plan is made again with the draft model armed, and that plan serves where it put the draft on
+  a device.
 - Priced (`step_rates`, `step_seconds`): the verify step of `1 + draft` positions from the routing
   record replayed as verifies (`ModelProfile::verify_curves`; without a record, the bound of `1 + draft`
   token cycles), its hits at the device's expert rate and its misses through the miss path, the draft's
@@ -1467,7 +1490,8 @@ flowchart TD
 - condition: `if (cfg.spec.has_draft_file()) {`
 - yes → its kind is read from its header by llama.cpp's speculative driver; a file the driver has no
   draft for, or a drafter whose vocabulary is not the model's, fails the open. Otherwise it loads as a
-  second model, on the devices if `draft_file_on_devices()`.
+  second model, on the devices if `draft_file_on_devices()` (on the one `draft-device` names, where
+  set; a name this build has no device for fails the open).
 
 #### `open.read.layout` — Which tensors are the routed experts
 - parent: —

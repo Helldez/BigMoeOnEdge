@@ -18,11 +18,20 @@ DraftKind draft_kind(const SpecConfig & spec) {
     return types.empty() ? DraftKind{} : DraftKind{types.front()};
 }
 
-llama_model_params
-draft_file_model_params(const DraftKind & kind, const SpecConfig & spec, ggml_backend_dev_t * devices) {
+llama_model_params draft_file_model_params(const DraftKind & kind,
+                                           const SpecConfig & spec,
+                                           ggml_backend_dev_t * devices,
+                                           std::vector<ggml_backend_dev_t> & one) {
     llama_model_params p = llama_model_default_params();
     if (!spec.draft_file_on_devices()) p.n_gpu_layers = 0;
     p.devices = devices;
+    // On the one device the plan named (SpecConfig::draft_device), where the backend has it: `one`
+    // holds the list, null-terminated as llama.cpp reads it, for as long as the caller loads.
+    if (spec.draft_file_on_devices() && !spec.draft_device.empty())
+        if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(spec.draft_device.c_str())) {
+            one = {dev, nullptr};
+            p.devices = one.data();
+        }
     p.load_mtp = kind.is_head();
     return p;
 }

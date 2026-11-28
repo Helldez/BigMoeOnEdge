@@ -1488,8 +1488,8 @@ unpriced, and the record comes with the first load that times none.
 
 Then, one side a load:
 - **A draft not timed:** the load arms it and times its decode: the head first (`--trial-spec 1`),
-  then the draft model (`--trial-spec 2`, `spec = drafter` with the paired file, on the device of a
-  device expert cache).
+  then the draft model (`--trial-spec 2`, `spec = drafter` with the paired file, on the device that
+  computes it fastest, [below](#where-a-draft-file-is-computed)).
 - **Every draft timed, not the decode without one:** the next load times it (`--trial-spec 0`).
 - **All timed:** the fastest draft stays only where it decodes faster than none by
   `PlannerPolicy::min_draft_win` (10%). A draft is not free when it does not win: its context holds
@@ -1510,7 +1510,7 @@ layer input for the drafter, and 500 MiB more compute). Where the device's memor
 is charged against the device expert cache (`draft_device_bytes`):
 - **weights:** the head's block inside the file (`ModelProfile::mtp_block_bytes`, which the probe sums
   over the block's tensors), or the draft model's file. A draft file the run names is placed by its own
-  rule (`mtp-head-on-devices`, `drafter-on-devices`), which charges it there;
+  rule ([where a draft file is computed](#where-a-draft-file-is-computed)), which charges it there;
 - **context:** what the front-end that opens the draft states (`ModelProfile::draft_context_bytes`), or
   else derived from the placement and the headers: a share of the target's KV on the devices per draft
   block (one for the head, the draft model's `block_count`), the target's compute buffer moved to the
@@ -1523,8 +1523,44 @@ A draft typed by hand is charged before the cache is sized. One the plan arms ta
 cache, and is not armed where what is left would not hold a verify. The side timed without a draft keeps
 the whole cache, so the two rates compare what each side really serves. Where the device's memory is the
 host's, the host's ledger holds the draft, as before. On a card without a device expert cache the
-fitter's placement does not charge the draft yet: where it does not fit, the load fails to open and
-counts.
+fitter's placement does not charge a draft the plan arms yet: where it does not fit, the load fails to
+open and counts. A draft model the plan places on such a card is charged whole, below.
+
+### Where a draft file is computed
+
+A draft model runs once every verify step beside the target, so the processor that computes it is in
+every step. On a rented 32 GB card serving Qwen3.8-Flash-Next from the fitter's placement, the plan put
+a draft model on the devices only beside a device expert cache, so there it drafted on the host. That
+cost 10-15 ms against a 5.9 ms target step, and drafting took the decode from 85.7 to 56.2 tok/s on
+code and from 98.7 to 41.9 on prose. So a draft file the run names, an MTP head file or a draft model
+(`place_draft_file`, `plan.draft-home`), goes on the device that computes dense weights fastest,
+whatever side serves. "Fastest" is that device's measured rate against the host's from the same
+experiment (`dense_rates`), never a backend's name. It stays on the host only where no device has room.
+
+A device's room is what it has free beyond the plan's own allocations. Where that is short, the room
+is taken from the plan by the price: the draft's pass on the host against on the device, once a verify
+step each, less what the bytes it takes would have served.
+- **Beside a device expert cache.** The cache gives the weights; on several cards it gives them by that
+  card's share of it, since llama.cpp splits the cache by layers. With a routing record, the verify of
+  `1 + draft` positions is replayed at the cache with and without those bytes. Where it costs more than
+  the faster pass saves, the draft drafts on the host and the cache stays whole. Without a record there
+  is no price, and the draft goes on the device wherever the cache keeps one token cycle beside it.
+- **Beside the fitter's layers, or a model held whole there.** First, the room the plan leaves free on
+  the device (`Placement::device_spare`). Short of it, whole layers' experts on that device move to the
+  host, lowest first, never a layer's dense part, which the target reads its hidden states through. The
+  price: a verify then reads that share of its experts at the host's rate, and from flash where the host
+  would hold more than it may. Without a record, a verify's reads are bounded by its positions' tokens.
+  The charge is the draft's weights and its blocks' KV where the fitter was given the draft, and all of
+  it (`draft_device_bytes`) where the fitter never saw it.
+- **Several devices.** The one with the cheapest pass and room is taken, and `draft-device` names it.
+  Otherwise llama.cpp would spread the draft over every card by free memory.
+
+A caller who placed it keeps theirs: `drafter-on-devices` or `mtp-head-on-devices`, either way, and
+`draft-device`. Where every device reads the host's memory, the question does not arise: there is one
+pool, and the host's ledger holds the draft wherever it is computed. A draft model the draft decision
+arms (`plan.spec`) is placed by the same rule. Beside a card's device expert cache both homes are
+priced there. Elsewhere the plan is made again with the draft model armed, and where that plan put it
+on a device, that plan serves.
 
 **A model the plan streams is offered to the device too, where the device can hold it whole.**
 llama.cpp would hold such a model on the device, and where that fits it can be the faster run by
