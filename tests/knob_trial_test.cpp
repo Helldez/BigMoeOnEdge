@@ -475,6 +475,24 @@ int main() {
             record_side_rate(copy_side, 61.5, timed);
             check(names_side(copy_side) && std::fabs(timed.staging_tps - 61.5) < 1e-9 && timed.no_staging_tps == 0.0,
                   "record: a load serving the copy times the copy's side");
+            // A load that drafts records no side: its rate counts the accepted drafts.
+            MeasuredKnobs before = timed;
+            before.device_cache_tps = 40.0;
+            before.wide_decode_tps = 41.0;
+            before.shared_device_tps = 42.0;
+            MeasuredKnobs drafted = before;
+            KnobTrialConfig sides[4];
+            sides[0].staging_side = 0;
+            sides[1].device_tier = 1;
+            sides[2].width_side = 1;
+            sides[2].width_narrow = 512;
+            sides[3].shared_device_side = 1;
+            for (const KnobTrialConfig & side : sides)
+                record_side_rate(side, 151.6, drafted, /*drafted*/ true);
+            check(drafted.staging_tps == before.staging_tps && drafted.no_staging_tps == 0.0 &&
+                      drafted.device_cache_tps == 40.0 && drafted.wide_decode_tps == 41.0 &&
+                      drafted.shared_device_tps == 42.0 && drafted.verdicts() == before.verdicts(),
+                  "record: a drafting load leaves every side's rate as it was");
         }
 
         // The shared-memory device's prompt rates, as the load that compared the answers timed them: read

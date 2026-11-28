@@ -275,8 +275,14 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
 // The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side
 // or shared_device_side), put where a plan reads it. One decision per load, in that
 // order, so a rate never answers two questions measured under one placement. Nothing when `trial`
-// names no side.
-void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);
+// names no side, and nothing when the load drafted (`drafted`: SpecConfig::enabled): a drafting load's
+// tokens per second count the accepted drafts, so its rate compares with no side timed without them. On
+// a rented 24 GB card an n-gram load recorded 151.6 tok/s for the mapping against 105.3 for the copy
+// timed without drafts, and every load after turned the copy off and decoded 30-40% slower.
+void record_side_rate(const KnobTrialConfig & trial,
+                      double tokens_per_second,
+                      MeasuredKnobs & rec,
+                      bool drafted = false);
 // The same side, one more failed open on its count (MeasuredKnobs::*_unviable).
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec);
 // The failed-open count of the side `trial` names, null when it names none.

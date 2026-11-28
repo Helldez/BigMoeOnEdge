@@ -4344,6 +4344,18 @@ int main() {
                           first.config.trial.device_tier == -1 && validate(first.config).ok,
                       "expert host buffer, nothing timed: the copy served and timed, one trial at a time",
                       validate(first.config).error);
+                // A load that drafts times no side: it serves the side already timed and times nothing.
+                {
+                    HardwareProfile h = hb;
+                    h.devices[0].upload_host_buffer_gibs = 25.0;
+                    ModelProfile m2 = seen;
+                    m2.knobs.staging_tps = 66.0;
+                    RunConfig drafting = base_cfg();
+                    drafting.spec.source = DraftSource::ngram;
+                    const Plan dr = plan_run(drafting, h, m2, half, PlanRequest{}, PlannerPolicy::defaults());
+                    check(dr.config.moe.expert_host_buffer == "discrete" && dr.config.trial.staging_side == -1,
+                          "expert host buffer, a drafting load: the timed side served, nothing timed");
+                }
                 // The copy timed: the next load serves the mapping and times it.
                 const Plan second = staged_on(25.0, 66.0, 0.0);
                 check(second.config.moe.expert_host_buffer.empty() && second.config.trial.staging_side == 0 &&

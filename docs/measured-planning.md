@@ -555,6 +555,14 @@ or the file's mapping (`staging_tps`, `no_staging_tps`). On a rented card shared
 probe that compares the two upload paths named one on a load and the other on the next, for 66 against
 44 tok/s; once both sides are timed, the rates decide.
 
+A load that drafts (`--mtp`, `--ngram`) times no side of any of these decisions. Its tokens per second
+count the drafts its verifies accepted, so its rate compares with no side timed without them: on a
+rented 24 GB card an n-gram load recorded 151.6 tok/s for the mapping against 105.3 for the copy, and
+every load after turned the copy off and decoded 30-40% slower. The session does not time it
+(`record_side_rate` keeps nothing from a drafting load). The experts' copy's rule does not ask such a load
+to time a side; the device tier, width and shared-device rules may still name one, which that load then
+serves without timing it.
+
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
 word per device). The load that moves the model compares them before it serves and reopens on the

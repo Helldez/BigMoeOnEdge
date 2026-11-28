@@ -18,6 +18,12 @@ Semantic Versioning.
     one side a load, after any other side being timed), and once both are timed the faster one serves,
     whatever a probe reads.
   On a card whose probe was stable the first side is the one it already chose.
+- **A load that drafts no longer records its rate for a decision across loads.** A drafting load's tokens
+  per second count the accepted drafts, and were recorded as the rate of whatever side the load served:
+  on a rented 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3 for the
+  experts' copy timed without drafts, and every load after turned the copy off and decoded 30-40% slower.
+  A load with `--mtp` or `--ngram` now times no side (the device tier, the graph width, the shared-memory
+  device, the experts' copy), and the copy's rule serves the side already timed instead of asking it to.
 
 ## [0.50.1] - 2026-11-25
 

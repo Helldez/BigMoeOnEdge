@@ -883,9 +883,9 @@ flowchart TD
 - Both sides timed by loads (`staging_tps`, `no_staging_tps`) → the faster serves, whatever the
   probe reads.
 - One side timed → this load serves the other, with `trial.staging_side` set, unless another side is
-  being timed.
+  being timed or the load drafts (`spec.enabled()`), which then serves the timed side again.
 - Nothing timed → the copy (`expert_host_buffer = <device>`), unless the mapping uploaded 10% faster;
-  the load times its side.
+  the load times its side, unless another side is being timed or it drafts.
 
 #### `plan.resident` — The model is held resident: no streaming
 - parent: —

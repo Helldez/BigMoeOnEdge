@@ -1124,7 +1124,14 @@ void choose_expert_staging(Planning & s) {
     const std::string room = "; the copy's " + mib_s(copy) + " MiB takes the place of the experts' pages in the " +
                              "file's mapping, which are handed back, so the host holds " + mib_s(held) + " MiB of " +
                              "the " + mib_s(s.usable) + " it may";
-    const bool other_trial = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0;
+    // A load that drafts decodes at a rate no side timed without drafting can be compared with
+    // (record_side_rate), so it times nothing and serves the side a timing load would leave.
+    const bool drafts = s.p.config.spec.enabled();
+    const bool other_trial = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || drafts;
+    const char * why_untimed = drafts
+                                   ? "; this load drafts, which no rate here was timed with, so it times nothing and "
+                                     "serves that side again"
+                                   : "; this load times another setting, so it serves that side again";
     bool stage = false;
     Source src = Source::Measured;
     std::string reason;
@@ -1146,7 +1153,7 @@ void choose_expert_staging(Planning & s) {
         std::snprintf(tps, sizeof(tps), "%.2f tok/s %s", timed_copy ? mk.staging_tps : mk.no_staging_tps,
                       timed_copy ? "with the copy" : "from the mapping");
         reason = std::string("a load here decoded ") + tps +
-                 (other_trial ? "; this load times another setting, so it serves that side again"
+                 (other_trial ? std::string(why_untimed)
                               : "; this load serves the other side and times it, and the faster of the two serves "
                                 "from the next load");
     } else {
