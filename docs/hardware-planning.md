@@ -1378,8 +1378,10 @@ to the context. The cache the answer decodes from keeps its size. On the same la
 Q4_K_M at an 8192-token context, a 2959-token prompt: 215 tok/s in 1024-token passes (64 thousand
 experts filled, 7.5 s), 367 in one pass (25 thousand, 3.1 s), first token 21.4 -> 15.8 s, the decode
 unchanged (25.0 / 25.1 tok/s, hit rate 94.7%) and the text identical. Giving the wide pass its own
-buffers instead took the memory from the cache: the same prefill, the decode 10% slower. Lending is
-armed only where the host writes the device's memory in place.
+buffers instead took the memory from the cache: the same prefill, the decode 10% slower. The plan arms
+lending on this side; the mechanism itself serves any device, the misses written in place where the host
+writes the device's memory and uploaded on the backend's queue elsewhere (gate G25g runs it on a device
+of the second kind).
 
 ### A model held in memory, on a device that shares it
 

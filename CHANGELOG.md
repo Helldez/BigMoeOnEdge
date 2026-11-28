@@ -7,7 +7,7 @@ Semantic Versioning.
 ## [Unreleased] - experimental, not for release
 
 This section belongs to an experimental change that pins the llama.cpp submodule to its own fork
-branch (`bmoe/moe-cache-exp-2611`, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
+branch (`bmoe/moe-cache-exp-2611`, and `bmoe/lossless-cache-2811` on top of it, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
 it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
 
 ### Added
@@ -43,6 +43,13 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   over PCIe and changed a looped model's answer), and two gates cover it (G25f with speculation, G25g with the
   cache lent to a wide prompt). `--device-cache-fill-lanes` and `--device-cache-read-ahead` typed by hand are no
   longer overwritten by `--auto`.
+- **The cache lent on any device.** Lending the device cache to a wide prompt was refused where the host does not
+  write the device's memory in place, because a remote device's server crashed on it. The cause was the view of the
+  compute buffer the lent cache lives in: it dropped the buffer's free function, which the RPC and CUDA backends
+  compare to recognise their own buffers, so the remote side received the cache's slots as belonging to no buffer.
+  The view now keeps the interface and frees nothing; elsewhere the misses are uploaded into the lent slots on the
+  backend's queue, and gate G25g now runs that path. The plan still arms lending only on a device that shares the
+  host's memory: on a card with memory of its own it is unmeasured.
 - **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
   `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
   ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.

@@ -143,7 +143,8 @@ refill a weight buffer between graphs, this commit is dropped at the next bump.
 
 ## 3c. Device expert cache levers (experimental fork branch)
 
-An experimental branch of the fork, `bmoe/moe-cache-exp-2611` of `Helldez/llama.cpp`, adds one commit
+An experimental branch of the fork, `bmoe/moe-cache-exp-2611` of `Helldez/llama.cpp` (and `bmoe/lossless-cache-2811`
+on top of it, for the cache lent to a prompt and the read-ahead of verify batches), adds one commit
 on top of the pinned branch (hook + Hexagon fix). It is not proposed upstream and it touches
 llama.cpp more than this project's rule allows (hard rule 1 asks for a single small commit); it lives
 on its own branch so the default pin can return to the hook branch unchanged.
@@ -161,12 +162,13 @@ on its own branch so the default pin can return to the hook branch unchanged.
   `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`
   (filled ahead only where the host writes the cache in place; predicted for every batch the cache
   serves), `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the
-  background) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch, where the
-  host writes that memory in place).
+  background) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch; where the
+  host does not write that memory in place the misses are uploaded into it on the backend's queue).
 - **Compute buffer room for a lent cache**: `ggml_gallocr_set_min_buffer_size` /
   `ggml_backend_sched_set_min_buffer_size` (a buffer reserved larger than its graphs need),
   `ggml_gallocr_get_buffer` / `ggml_backend_sched_get_buffer`, and `ggml_backend_buffer_alias` (a
-  weights-usage view of the compute buffer the banks are bound through).
+  weights-usage view of the compute buffer the banks are bound through, which keeps the viewed buffer's
+  interface, since backends compare it to recognise their own buffers, and frees none of its memory).
 
 bmoe drives them through `RunConfig::moe.device_cache_fill_lanes`, `device_cache_host_call`,
 `device_cache_cpu_threads`, `device_cache_read_ahead`, `device_cache_async_admit` and `device_cache_lend`, and fills misses from the file with
