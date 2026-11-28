@@ -43,6 +43,21 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
     goes from 24.2 to 37.7 tok/s on code (20.1 to 30.4 on prose), Qwen3.8-Flash-Next Q2_0 from 12.9
     to 14.8; on main's streamed path it measured no gain (17.0 against 21.4 on code). See
     [docs/drafter.md](docs/drafter.md).
+- **A device expert cache warmed at load from the model's routing record** (`--device-cache-warm`,
+  experimental, fork branch `bmoe/cache-warm-2811`). A cache started empty and paid every expert it
+  would hold as a miss inside a decode step. On a rented 32 GB card with Qwen3.8-Flash-Next a cold cache
+  served 91.5% of its first 256 tokens' experts (about 11.0 ms a step, against 8.8 ms warm), and the
+  load that timed it was compared with a warm fitter's placement, which won. `--auto` now fills the
+  cache at load with what the record decoded most often, hottest first, up to its slots, on the path
+  its misses take. It does so where the record says the cold misses are first touches and the fill
+  costs no more than they would, priced at the last warm's measured rate. Not where the cache is lent
+  to prompts. The side a load is kept at now leaves out the rate probe's settling window on every side,
+  so a cold cache is not weighed against a warm placement. The saving a warm is weighed by is never
+  priced below the fill's own measured rate per byte: on the same card one slower fill (1.60 s against
+  0.76-0.92) had turned the warm off for every load after. New gates: G25w (warmed, over the RPC
+  device) and G25h d) (warmed in place) are identical to the resident model; G25e also opens a side under
+  an n-gram draft, which keeps its text and records no rate
+  ([hardware-planning.md](docs/hardware-planning.md#a-device-expert-cache-warmed-at-load)).
 - **A streamed model computed on a device that shares the host's memory.** On a unified-memory
   machine a model larger than its memory streamed its experts to the cores. `--auto` now prices,
   against that stream, every layer on the device with the stream's expert cache moved onto it, its

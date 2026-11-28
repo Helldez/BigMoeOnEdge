@@ -16,6 +16,7 @@
 #include "bmoe/allocate.h"
 #include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 #include "bmoe/routing.h"
@@ -4267,6 +4268,106 @@ int main() {
                   std::to_string(made.config.buft_overrides.size()) + " overrides");
         }
 
+        // A device expert cache warmed at load from the model's routing record, where its cold misses are
+        // first touches and the fill costs no more than they would; the load that times the cache side is
+        // warm too, so the side is timed as it serves.
+        {
+            const auto with_record = [&](double hit, uint64_t set) {
+                ModelProfile w = model;
+                w.hit_curve.measured = true;
+                w.hit_curve.decode_tokens = 256;
+                w.hit_curve.points = {{0, 0.0}, {1 * MiB, hit}};
+                auto keys = std::make_shared<std::vector<uint32_t>>();
+                const uint64_t each = 4 * MiB;
+                for (uint64_t b = each, i = 0; b <= set; b += each, ++i) {
+                    keys->push_back((uint32_t) ((i % model.n_layer) << 16 | (i / model.n_layer)));
+                    w.hottest.cum_bytes.push_back(b);
+                }
+                w.hottest.keys = keys;
+                return w;
+            };
+            const uint64_t routed = model.group(WeightGroup::Experts).bytes_per_token;
+            // Cold, 2% of 256 tokens' experts missed: fewer bytes than the record decoded, so first touches.
+            const ModelProfile touches = with_record(0.98, std::max<uint64_t>(8 * GiB, 6 * routed));
+            const Plan on = plan_run(base_cfg(), card, touches, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dw = find(on, "device-cache-warm");
+            check(on.config.moe.device_cache_mb > 0 && on.config.moe.device_cache_warm &&
+                      on.config.moe.device_cache_warm_experts == touches.hottest.keys && dw && dw->value == "on" &&
+                      on.config.trial.device_tier == 1,
+                  "cache warm: first touches, the cache side's timed load starts warm", dw ? dw->reason : "none");
+            // Half of them missed, from a small decoded set: the misses are the cache's size.
+            const ModelProfile capacity = with_record(0.5, 64 * MiB);
+            const Plan size = plan_run(base_cfg(), card, capacity, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(size, "device-cache-warm");
+            check(!size.config.moe.device_cache_warm && !size.config.moe.device_cache_warm_experts && dw &&
+                      dw->value == "off",
+                  "cache warm: misses of a cache too small for its routing, no warm", dw ? dw->reason : "none");
+            // The last warm here filled far slower than the probed miss path: the misses move the same bytes
+            // from the same place, so they would have cost that too, and the warm stays.
+            ModelProfile slow = touches;
+            slow.knobs.warm_experts = 100;
+            slow.knobs.warm_s = 60.0;
+            const Plan sl = plan_run(base_cfg(), card, slow, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(sl, "device-cache-warm");
+            check(sl.config.moe.device_cache_warm && dw && dw->source == Source::Measured,
+                  "cache warm: first touches, a fill measured slower than the probed misses still made",
+                  dw ? dw->reason : "none");
+            // Half of the cold misses first touches: the fill pays for all its bytes and saves half, unless it
+            // was measured cheaper than the misses' path.
+            const ModelProfile part = with_record(0.98, (uint64_t) (0.02 * 256 * (double) routed / 2));
+            const Plan pa = plan_run(base_cfg(), card, part, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(pa, "device-cache-warm");
+            check(!pa.config.moe.device_cache_warm && dw && dw->value == "off",
+                  "cache warm: half the misses first touches, priced on their path: no warm", dw ? dw->reason : "none");
+            ModelProfile part_slow = part;
+            part_slow.knobs.warm_experts = 100;
+            part_slow.knobs.warm_s = 60.0;
+            const Plan ps = plan_run(base_cfg(), card, part_slow, half, PlanRequest{}, PlannerPolicy::defaults());
+            check(!ps.config.moe.device_cache_warm, "cache warm: half the misses first touches, a slow fill: no warm");
+            ModelProfile part_fast = part;
+            part_fast.knobs.warm_experts = (int) part.hottest.cum_bytes.size();
+            part_fast.knobs.warm_s = 1e-6;
+            const Plan pf = plan_run(base_cfg(), card, part_fast, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(pf, "device-cache-warm");
+            check(pf.config.moe.device_cache_warm && dw && dw->source == Source::Measured,
+                  "cache warm: half the misses first touches, a fill measured cheaper than them: warmed",
+                  dw ? dw->reason : "none");
+            // A cache lent to a prompt empties before the first answer.
+            RunConfig lend = base_cfg();
+            lend.moe.device_cache_lend = true;
+            PlanRequest lent;
+            lent.pinned = {"device-cache-lend"};
+            const Plan le = plan_run(lend, card, touches, half, lent, PlannerPolicy::defaults());
+            check(le.config.moe.device_cache_mb > 0 && !le.config.moe.device_cache_warm,
+                  "cache warm: a cache lent to prompts is not warmed");
+            // The caller's choice stands; set on, the record's list is what it warms with.
+            RunConfig mine = base_cfg();
+            mine.moe.device_cache_warm = true;
+            PlanRequest pinned;
+            pinned.pinned = {"device-cache-warm"};
+            const Plan pi = plan_run(mine, card, capacity, half, pinned, PlannerPolicy::defaults());
+            check(pi.config.moe.device_cache_warm && pi.config.moe.device_cache_warm_experts == capacity.hottest.keys &&
+                      !find(pi, "device-cache-warm"),
+                  "cache warm: pinned on, the record's experts are what it warms with");
+            // A draft armed by the caller changes neither: each draft source warms as the plain run does.
+            for (DraftSource src : {DraftSource::ngram, DraftSource::mtp, DraftSource::drafter}) {
+                RunConfig drafted = base_cfg();
+                drafted.spec.source = src;
+                drafted.spec.draft_max = 3;
+                PlanRequest typed;
+                typed.pinned = {"spec"};
+                const Plan dp = plan_run(drafted, card, touches, half, typed, PlannerPolicy::defaults());
+                dw = find(dp, "device-cache-warm");
+                check(dp.config.moe.device_cache_mb > 0 && dp.config.moe.device_cache_warm && dw && dw->value == "on",
+                      std::string("cache warm: under a ") + drafted.spec.source_name() + " draft, warmed as plain",
+                      dw ? dw->reason : "no decision, cache " + std::to_string(dp.config.moe.device_cache_mb));
+            }
+            // No record: nothing to warm with, and nothing said.
+            const Plan none = plan_run(base_cfg(), card, model, half, PlanRequest{}, PlannerPolicy::defaults());
+            check(!none.config.moe.device_cache_warm && !find(none, "device-cache-warm"),
+                  "cache warm: no record, no warm");
+        }
+
         // The projector goes on the device with every layer: its bytes come off the card's spare
         // before the cache does, and the host's ledger has no row for it.
         {
@@ -4452,6 +4553,7 @@ int main() {
                       "device tier, the cache measured past the fitter's price: kept, the other side never opened",
                       e ? e->reason : "no decision");
             }
+
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;
             check(tier_on(slow_cores, under).config.trial.device_tier == 0,

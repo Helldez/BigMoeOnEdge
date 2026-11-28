@@ -232,7 +232,10 @@ int main() {
         check(m.hit_curve.measured && m.hit_curve.rejected.empty(), "a matching trace gives the model its curve",
               m.hit_curve.rejected);
         check(m.hit_curve.hit_share(80) > 0.9, "the whole set serves nearly every decode lookup");
+        check(!m.hottest.empty() && m.hottest.cum_bytes.size() == m.hottest.keys->size(),
+              "a matching trace gives the model its hottest experts too");
         attach_routing(m, longer, 1, 0);
+        check(m.hottest.empty(), "a refused trace leaves no experts to warm with");
         check(!m.hit_curve.measured && !m.hit_curve.rejected.empty(), "another top-k is another routing: refused",
               m.hit_curve.rejected);
         attach_routing(m, t, 2, 0);
@@ -247,6 +250,26 @@ int main() {
         attach_routing(other, longer, 2, 0);
         check(!other.hit_curve.measured, "another model's blocks are refused", other.hit_curve.rejected);
         check(HitCurve{}.hit_share(1ull << 40) == 0.0, "an absent curve credits nothing by itself");
+    }
+
+    // The hottest experts: decoded batches counted, the prompt's left out, ties in layer then expert order;
+    // their bytes summed in that order, and what a cache of a size holds of them.
+    {
+        RoutingTrace t;
+        t.n_layer = 2;
+        t.n_expert = 4;
+        t.expert_bytes = {10, 30};
+        t.batches = {{0, false, {0, 1, 2, 3}}, {0, true, {2, 3}}, {1, true, {1, 3}}, {0, true, {3}}};
+        const ModelProfile::HotExperts hot = hottest_experts(t);
+        const std::vector<uint32_t> want = {(0u << 16) | 3, (0u << 16) | 2, (1u << 16) | 1, (1u << 16) | 3};
+        check(!hot.empty() && *hot.keys == want, "hottest experts: decoded counts first, then layer and expert order");
+        check(hot.cum_bytes == std::vector<uint64_t>{10, 20, 50, 80}, "hottest experts: their bytes summed in order");
+        size_t n = 0;
+        check(hot.held_bytes(49, &n) == 20 && n == 2 && hot.held_bytes(80, &n) == 80 && n == 4 &&
+                  hot.held_bytes(5, &n) == 0 && n == 0,
+              "hottest experts: a cache holds the hottest whole experts its bytes take");
+        t.batches.resize(1);
+        check(hottest_experts(t).keys->size() == 4, "hottest experts: a prompt-only trace counts its prompt");
     }
 
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);

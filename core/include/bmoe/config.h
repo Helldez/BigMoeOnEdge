@@ -136,6 +136,16 @@ struct MoeStreamConfig {
     // misses after (llama_context_params::moe_cache_lend). One reservation serves the prompt and the
     // answer. Needs device_cache_mb and no CPU share.
     bool device_cache_lend = false;
+    // - warm: at load the cache is filled with the experts the model's own routing record decoded most
+    //   often, hottest first, up to its slots, on the same path its misses take (uploaded to a card,
+    //   read from the file into the slots where the host writes them in place). A short session's
+    //   misses are then the experts the record never decoded, not first touches. The plan sets it where
+    //   the record says the cold misses are first touches and the fill costs no more than they would
+    //   (choose_cache_warm); without the record's list there is nothing to warm with.
+    bool device_cache_warm = false;
+    // The experts it warms with, (layer << 16) | expert, hottest first: the plan's, from the record
+    // (ModelProfile::hottest), never a parameter.
+    std::shared_ptr<const std::vector<uint32_t>> device_cache_warm_experts;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the

@@ -346,6 +346,22 @@ int main() {
                   find_measured_knobs(hback, a.hardware, "0.35.1")->width_held == 0 &&
                   std::fabs(find_measured_knobs(hback, a.hardware, "0.35.1")->wide_decode_tps - 14.2) < 1e-9,
               "record: the width in force is kept beside the rates and reads back");
+        // What the last warm of a device cache cost: kept, read back.
+        {
+            MeasuredKnobs wm;
+            wm.hardware = a.hardware;
+            wm.engine = a.engine;
+            wm.warm_experts = 1200;
+            wm.warm_s = 1.25;
+            std::vector<MeasuredKnobs> wr = back;
+            keep_measured_knobs(wr, wm);
+            std::vector<MeasuredKnobs> wback;
+            const MeasuredKnobs * k = nullptr;
+            check(parse_measured_knobs(format_measured_knobs(wr), wback, err) &&
+                      (k = find_measured_knobs(wback, a.hardware, "0.35.1")) && k->warm_experts == 1200 &&
+                      std::fabs(k->warm_s - 1.25) < 1e-9,
+                  "record: the last warm of a device cache reads back");
+        }
         MeasuredKnobs w3 = w1;
         w3.width_narrow = 1024;
         w3.wide_prefill_tps = 0.0;

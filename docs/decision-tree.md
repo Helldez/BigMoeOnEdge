@@ -559,6 +559,7 @@ flowchart TD
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
     plan_record_unstreamed["<b>plan.record-unstreamed</b><br/>A run that does not stream records its routing where no record exists"]
+    plan_cache_warm["<b>plan.cache-warm</b><br/>A device expert cache warmed at load from the model's routing record [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
     plan_tier_rates["<b>plan.tier.rates</b><br/>The device must read experts faster than the host"]
@@ -628,7 +629,8 @@ flowchart TD
     plan_backends -.-> plan_held_whole
     plan_held_whole -.-> plan_shared_cache
     plan_shared_cache -.-> plan_record_unstreamed
-    plan_record_unstreamed -.-> plan_unplannable
+    plan_record_unstreamed -.-> plan_cache_warm
+    plan_cache_warm -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
     plan_width -.-> plan_draft_home
@@ -822,6 +824,23 @@ flowchart TD
   and the drafts (`plan.spec`) on it. A pinned `record-unstreamed` is kept.
 - Only on a load that times nothing (no trial of any kind and no answer check): a rate measured beside
   the barriers would carry them. Until then the loads that time a side decide unpriced.
+
+#### `plan.cache-warm` — A device expert cache warmed at load from the model's routing record [EXPERIMENTAL]
+- parent: —
+- code: `core/src/plan/planner.cpp` · `choose_cache_warm`
+- condition: `if (c.moe.device_cache_mb <= 0 || m.hottest.empty() || !m.hit_curve.measured) return;`
+- Asked by `plan_run` on any plan with a device expert cache and a routing record
+  of the model's own (`ModelProfile::hottest`, `hottest_experts`). `device-cache-warm` pinned → the
+  caller's, with the record's experts where it is on.
+- The cache lent to prompts (`device_cache_lend`) → off: a wide pass empties it before the first answer.
+- The miss path unpriced (`step_rates`) → off.
+- Priced: the hottest experts the cache holds, filled at load at the last warm's measured rate
+  (`MeasuredKnobs::warm_experts`, `warm_s`), or on the miss path before any, against the same bytes on
+  the miss path at the share of the record's cold misses that are first touches (its decoded experts'
+  bytes over its missed bytes, capped at 1). The saving is never priced below the fill's measured rate
+  per byte: a miss moves the same bytes from the same place. The fill inside the margin of what it saves → on, with
+  the record's list (`device_cache_warm_experts`), on the load that times the cache's side too.
+  Otherwise → off.
 
 #### `plan.unplannable` — Nothing to plan: unknown model, dense model, unknown memory
 - parent: —
@@ -1292,6 +1311,7 @@ flowchart TD
     open_ctx_ubatch_halve["<b>open.ctx.ubatch-halve</b><br/>Still no context: halve the graph width"]
     open_ctx_mtp["<b>open.ctx.mtp</b><br/>The MTP draft context"]
     open_answer_check["<b>open.answer-check</b><br/>Compare the device's answers with the cores'"]
+    open_cache_warm["<b>open.cache-warm</b><br/>A device expert cache filled at load [EXPERIMENTAL]"]
     open_answer_check_cache["<b>open.answer-check-cache</b><br/>The same comparison, once a device expert cache is armed"]
     open_answer_verdict["<b>open.answer.verdict</b><br/>Confirmed, differs, or could not compare"]
     open_answer_weigh["<b>open.answer.weigh</b><br/>Confirmed, but are the cores faster for this model's requests?"]
@@ -1373,7 +1393,8 @@ flowchart TD
     open_ctx_op_offload -.-> open_ctx_cache_shrink
     open_ctx_cache_shrink -.-> open_ctx_mtp
     open_ctx_mtp -.-> open_answer_check
-    open_answer_check -.-> open_answer_check_cache
+    open_answer_check -.-> open_cache_warm
+    open_cache_warm -.-> open_answer_check_cache
     open_answer_check_cache -.-> open_sampler
     open_sampler -.-> open_spec
     open_spec -.-> open_stream
@@ -1587,6 +1608,15 @@ flowchart TD
   reference copy is loaded on the cores. A probe text is decoded on both, row by row, then once
   wide.
 - Not confirmed → this opening ends (`open.reopen`).
+
+#### `open.cache-warm` — A device expert cache filled at load [EXPERIMENTAL]
+- parent: —
+- code: `core/src/engine/session.cpp` · `Session::open_placed`
+- condition: `if (cfg.moe.device_cache_mb > 0 && cfg.moe.device_cache_warm && cfg.moe.device_cache_warm_experts &&`
+- Right after the cache is armed: `llama_moe_cache_warm` fills its free slots with the plan's experts,
+  hottest first, on the path its misses take (an upload, or the file into the slots in place), and
+  stops where it is full. The experts filled and the seconds go in the record
+  (`MeasuredKnobs::warm_experts`, `warm_s`).
 
 #### `open.answer-check-cache` — The same comparison, once a device expert cache is armed
 - parent: —
@@ -1857,8 +1887,11 @@ flowchart TD
 - The stages run in order, each when armed:
   1. threads (the incumbent and the candidates);
   2. overlap (both sides, when the hook exists);
-  3. rate, timing one side (`device_tier`, `width_side`, `shared_device_side` or `spec_side`).
+  3. rate, timing one side (`device_tier`, `width_side`, `shared_device_side` or `spec_side`); on a load that drafts, only `spec_side` (`record_side_rate`).
 - A cost probe always measures the plain decode cost (`req.trial`).
+- The side a load times is kept at what it decoded over its turns, less the rate probe's settling
+  window, on every side alike: a side is compared once its cache is warm, not on the first touches of a
+  cache that started empty.
 
 ## req — one request
 

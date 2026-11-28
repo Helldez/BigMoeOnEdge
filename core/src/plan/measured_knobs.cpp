@@ -197,6 +197,12 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_prompt_tps);
             out += std::string(" no_shared_device_prompt_tps=") + num;
         }
+        // The last warm of a device expert cache: later keys still, written once a load warmed one.
+        if (r.warm_experts > 0) {
+            out += " warm_experts=" + std::to_string(r.warm_experts);
+            std::snprintf(num, sizeof(num), "%.3f", r.warm_s);
+            out += std::string(" warm_s=") + num;
+        }
         // The model's own draft head: later keys still, written once a side is measured.
         if (r.spec_tps > 0.0 || r.no_spec_tps > 0.0 || r.drafter_tps > 0.0) {
             std::snprintf(num, sizeof(num), "%.3f", r.spec_tps);
@@ -325,6 +331,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.shared_device_tps);
             else if (k == "no_shared_device_tps")
                 ok = as_double(r.no_shared_device_tps);
+            else if (k == "warm_experts")
+                ok = as_int(r.warm_experts);
+            else if (k == "warm_s")
+                ok = as_double(r.warm_s);
             else if (k == "spec_tps")
                 ok = as_double(r.spec_tps);
             else if (k == "no_spec_tps")
@@ -408,10 +418,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 || r.mix_requests < 0 ||
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
             !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
-            !(r.no_shared_device_prompt_tps >= 0.0) || !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) ||
-            !(r.drafter_tps >= 0.0) || !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) ||
-            !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) || r.spec_draft < 0 ||
-            r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
+            !(r.no_shared_device_prompt_tps >= 0.0) || r.warm_experts < 0 || !(r.warm_s >= 0.0) ||
+            !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) || !(r.drafter_tps >= 0.0) ||
+            !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) || !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) ||
+            r.spec_draft < 0 || r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
             r.drafter_draft > SpecConfig::draft_max_limit) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
@@ -460,6 +470,10 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             if (rec.no_shared_device_tps > 0.0) r.no_shared_device_tps = rec.no_shared_device_tps;
             if (rec.shared_device_prompt_tps > 0.0) r.shared_device_prompt_tps = rec.shared_device_prompt_tps;
             if (rec.no_shared_device_prompt_tps > 0.0) r.no_shared_device_prompt_tps = rec.no_shared_device_prompt_tps;
+            if (rec.warm_experts > 0) {
+                r.warm_experts = rec.warm_experts;
+                r.warm_s = rec.warm_s;
+            }
             merge_unviable(r.spec_unviable, rec.spec_unviable, r.spec_tps, rec.spec_tps);
             merge_unviable(r.no_spec_unviable, rec.no_spec_unviable, r.no_spec_tps, rec.no_spec_tps);
             if (rec.spec_tps > 0.0) r.spec_tps = rec.spec_tps;

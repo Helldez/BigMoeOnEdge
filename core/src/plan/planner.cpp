@@ -5413,6 +5413,107 @@ void choose_record_unstreamed(Plan & p, const ModelProfile & m, const PlanReques
     p.decisions.push_back(std::move(d));
 }
 
+// ── a device expert cache warmed at load ──
+// A device expert cache starts empty and fills on its misses, so a short session pays every expert it
+// will hold as a miss inside a decode step, and a load timed on such a session times those first
+// touches. On a rented 32 GB card with Qwen3.8-Flash-Next, a cold cache served 91.5% of its first 256
+// tokens' experts, where the same cache warm served 97.8% (11.0 ms a step against 8.8); on a 24 GB card
+// the hit was the same at a 19 GB cache, so those misses were first touches, not a cache too small. On a
+// 12 GB card warming bought nothing for its load time: there the misses were the cache's size. So the
+// cache is warmed at load with what the model's own routing record decoded most often, up to its size
+// (ModelProfile::hottest), where the record says the cold misses are first touches and the fill costs
+// no more than they do:
+// - what a warm holds: the hottest experts the cache's bytes take;
+// - what it saves: those bytes on the miss path (an upload to a card, the file into a shared device's
+//   slots), never priced below the fill's own rate per byte, at the share of the record's cold misses at this cache
+//   that are first touches (its decoded experts' bytes over its missed bytes, capped at 1; an upper bound, since some
+//   were first seen in the prompt);
+// - what it costs: the same bytes at the rate the last warm here filled them (MeasuredKnobs::warm_s), or
+//   on the miss path itself before any. The two are the same bytes on the same path, so a fill priced
+//   inside the margin of what it saves is taken: it moves them out of the steps.
+// A cache lent to a prompt's wide passes empties before each, so a warm is gone before the first answer.
+// No record, nothing to warm with. A caller who set it keeps theirs.
+void choose_cache_warm(
+    Plan & p, const HardwareProfile & hw, const ModelProfile & m, const PlanRequest & req, const PlannerPolicy & pol) {
+    RunConfig & c = p.config;
+    // dt:plan.cache-warm
+    if (c.moe.device_cache_mb <= 0 || m.hottest.empty() || !m.hit_curve.measured) return;
+    if (req.is_pinned("device-cache-warm")) {
+        if (c.moe.device_cache_warm) c.moe.device_cache_warm_experts = m.hottest.keys;
+        return;
+    }
+    for (const Decision & x : p.decisions)
+        if (x.knob == "device-cache-warm") return;
+    Decision d;
+    d.knob = "device-cache-warm";
+    d.value = "off";
+    d.source = Source::Derived;
+    const auto mib_s = [](double b) { return u64s((uint64_t) (b / (1024.0 * 1024.0))); };
+    const uint64_t cache = (uint64_t) c.moe.device_cache_mb << 20;
+    if (c.moe.device_cache_lend) {
+        d.brief = "The device cache starts empty: a prompt's wide passes empty it before the first answer.";
+        d.reason = "the cache is lent to a prompt's wide passes, which empty it before each, so what a warm put in "
+                   "it is gone before the first answer";
+        p.decisions.push_back(std::move(d));
+        return;
+    }
+    size_t n_held = 0;
+    const uint64_t held = m.hottest.held_bytes(cache, &n_held);
+    if (held == 0) return;
+    const StepRates r = step_rates(c, hw, m);
+    const double miss_path = r.ok ? r.miss_s_per_byte - r.hit_s_per_byte : 0.0;
+    if (miss_path <= 0.0) {
+        d.brief = "The device cache starts empty: what a miss costs here is unmeasured.";
+        d.reason = "warming it would fill " + mib_s((double) held) +
+                   " MiB at load, and with no measured rate for its misses there is no price to weigh that by";
+        p.decisions.push_back(std::move(d));
+        return;
+    }
+    const double routed = (double) m.group(WeightGroup::Experts).bytes_per_token;
+    const double missed = (1.0 - m.hit_curve.hit_share(cache)) * (double) m.hit_curve.decode_tokens * routed;
+    const double set = (double) m.hottest.cum_bytes.back();
+    const double first = missed > 0.0 ? std::min(1.0, set / missed) : 1.0;
+    const MeasuredKnobs & mk = m.knobs;
+    double fill_per_byte = miss_path;
+    bool measured = false;
+    if (mk.warm_experts > 0 && mk.warm_s > 0.0) {
+        const size_t k = std::min((size_t) mk.warm_experts, m.hottest.cum_bytes.size());
+        const double bytes = (double) m.hottest.cum_bytes[k - 1];
+        if (bytes > 0.0) {
+            fill_per_byte = mk.warm_s / bytes;
+            measured = true;
+        }
+    }
+    // A miss inside a step moves the same bytes from the same place as the fill, one layer's experts at a
+    // time and with the step waiting, so it costs at least what the fill measured per byte. A fill
+    // measured slower than the probed miss path says the path was slower on that load, not that the
+    // fill costs more than the misses: on a rented 32 GB card one load filled the same 10844 experts in
+    // 1.60 s where three before had taken 0.76-0.92, and the plan after turned the warm off.
+    const double fill_s = (double) held * fill_per_byte;
+    const double saved_s = (double) held * first * std::max(miss_path, fill_per_byte);
+    const bool warm = fill_s <= saved_s * (1.0 + (double) pol.min_backend_win);
+    char nums[400];
+    std::snprintf(nums, sizeof(nums),
+                  "the %zu experts this model's routing record decoded most often that a %s MiB cache holds, %s MiB, "
+                  "fill in %.2f s at load (%s); cold, %.0f%% of the record's misses at this cache are first touches "
+                  "(its decoded experts, %s MiB, over its missed bytes), which cost the steps %.2f s",
+                  n_held, mib_s((double) cache).c_str(), mib_s((double) held).c_str(), fill_s,
+                  measured ? "at the rate the last warm here filled" : "priced on the misses' own path", 100.0 * first,
+                  mib_s(set).c_str(), saved_s);
+    d.source = measured ? Source::Measured : Source::Derived;
+    if (warm) {
+        c.moe.device_cache_warm = true;
+        c.moe.device_cache_warm_experts = m.hottest.keys;
+        d.value = "on";
+        d.brief = "The device cache starts with the " + size_brief(held) + " of experts this model used most.";
+        d.reason = std::string(nums) + "; the fill moves them out of the steps";
+    } else {
+        d.brief = "The device cache starts empty: its misses are mostly its size, not first touches.";
+        d.reason = std::string(nums) + ", less than the fill by the margin";
+    }
+    p.decisions.push_back(std::move(d));
+}
+
 Plan plan_run_placed(const RunConfig & base,
                      const HardwareProfile & hw,
                      const ModelProfile & model,
@@ -5429,6 +5530,7 @@ Plan plan_run(const RunConfig & base,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
     Plan p = plan_run_placed(base, hw, model, projected, req, pol);
+    choose_cache_warm(p, hw, model, req, pol);
     choose_spec(p, base, hw, model, projected, req, pol);
     choose_record_unstreamed(p, model, req);
     return p;

@@ -558,6 +558,12 @@ being created with the target's,
 A record from an earlier build may also hold `host_call_tps` and `no_host_call_tps`, from a lookup inside
 the device's graph that is gone; they are read past.
 
+The record also keeps what the last warm of a device expert cache cost (`warm_experts`, `warm_s`), not a
+side but the rate the next plan prices a warm at
+([hardware-planning.md](hardware-planning.md#a-device-expert-cache-warmed-at-load)). Whatever side a load
+times, it is kept at what it decoded less the rate probe's settling window, so both sides are compared once
+their cache is warm.
+
 A load that drafts times no side but the draft's own (`spec_tps`, `drafter_tps`). Its tokens per second
 count the drafts its verifies accepted, so its rate compares with no side timed without them: on a rented
 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3 for the experts' copy,

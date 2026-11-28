@@ -70,6 +70,11 @@ struct MeasuredKnobs {
     double shared_device_prompt_tps = 0.0;
     double no_shared_device_prompt_tps = 0.0;
 
+    // What warming a device expert cache at load cost the last load that warmed one (planner.cpp,
+    // choose_cache_warm): the experts filled, the hottest of the model's routing record first, and the
+    // seconds the fill took. 0 where no load warmed one. The plan prices the next warm at this rate.
+    int warm_experts = 0;
+    double warm_s = 0.0;
     // Whether a model held whole drafts with its own MTP block, decided across loads (planner.cpp,
     // choose_spec): the decode rate with the head drafting and without, in tokens per second as a
     // person reads them (accepted tokens over the time spent), 0 when that side was not measured. The
@@ -263,8 +268,9 @@ struct MeasuredKnobs {
                (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) +
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
                (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
-               (spec_tps > 0.0) + (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) +
-               (drafter_tps > 0.0) + (drafter_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
+               (warm_experts > 0) + (spec_tps > 0.0) + (no_spec_tps > 0.0) + (spec_unviable > 0) +
+               (no_spec_unviable > 0) + (drafter_tps > 0.0) + (drafter_unviable > 0) + (int) prefill.size() +
+               (int) device_answers.size();
     }
 };
 
