@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -172,19 +173,39 @@ Placement probe_placement(const char * model_path,
         draft.cparams = &dcparams;
         draft.shares_model = !own_file;
     }
+    // A draft file the fitter cannot measure is fitted without, and the placement says so: the fitter
+    // catches its own failure to measure the extra model and goes on with the main one alone, reporting
+    // success, so a placement taken as "fitted with the draft" left no room for it. A DFlash drafter is
+    // one (its context needs the target's, ctx_other, which a no_alloc measurement does not have): on a
+    // 32 GB card the fitter gave 28.9 GB to the model's layers and the drafter on the card then ran out
+    // of memory. So the file is measured first, the way the fitter would (no_alloc, the same
+    // parameters), and a measurement that fails leaves it out; the plan then charges it whole from its
+    // own file and header (draft_device_bytes). The model's own head is the target's load and is not
+    // measured apart.
+    bool with_draft = fit_draft;
+    if (fit_draft && own_file) {
+        dcparams.n_ctx = cparams.n_ctx;
+        try {
+            (void) common_fit_measure(draft.paths_model, &dmparams, &dcparams, nullptr, nullptr, GGML_LOG_LEVEL_WARN);
+        } catch (const std::exception &) {
+            with_draft = false;
+        }
+    }
 
     const common_params_fit_status st =
         common_fit_params(model_paths, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
-                          fitter_n_ctx_min, fit_draft ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
+                          fitter_n_ctx_min, with_draft ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
         return pl;
     }
     pl.fitted = true;
-    pl.fitted_with_draft = fit_draft;
+    pl.fitted_with_draft = with_draft;
     pl.outcome = st == COMMON_PARAMS_FIT_STATUS_SUCCESS
                      ? "the capacity fitter found a placement that is projected to fit"
                      : "the capacity fitter could not make the model fit the devices";
+    if (fit_draft && !with_draft)
+        pl.outcome += ", without the draft file, which it could not measure (the plan charges it from its file)";
     pl.n_ctx = cparams.n_ctx;
 
     // With no device at all, "layers on devices" means nothing: the fitter leaves n_gpu_layers at

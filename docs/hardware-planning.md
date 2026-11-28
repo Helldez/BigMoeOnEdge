@@ -1550,8 +1550,15 @@ step each, less what the bytes it takes would have served.
   host, lowest first, never a layer's dense part, which the target reads its hidden states through. The
   price: a verify then reads that share of its experts at the host's rate, and from flash where the host
   would hold more than it may. Without a record, a verify's reads are bounded by its positions' tokens.
-  The charge is the draft's weights and its blocks' KV where the fitter was given the draft, and all of
-  it (`draft_device_bytes`) where the fitter never saw it.
+  The charge is the draft's weights and its blocks' KV where the fitter measured the draft beside the
+  model, and all of it from the file and its header (`draft_device_bytes`: weights, KV, compute at its
+  width, the layer input) where the fitter never saw it or could not measure it. The fitter does not
+  say when it could not: it catches its own failure to measure the extra model and fits the main one
+  alone. A DFlash drafter is one such file, since its context needs the target's. On a 32 GB card it
+  gave 28.9 GB to the model's layers, and the drafter then ran out of memory on the card. So the
+  placement probe measures a draft file first, the way the fitter would, and a measurement that fails
+  leaves the draft out of the fit (`Placement::fitted_with_draft` false, said in the placement's
+  outcome).
 - **Several devices.** The one with the cheapest pass and room is taken, and `draft-device` names it.
   Otherwise llama.cpp would spread the draft over every card by free memory.
 

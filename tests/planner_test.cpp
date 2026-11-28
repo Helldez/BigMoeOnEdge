@@ -4172,6 +4172,35 @@ int main() {
                   "draft home, the fitter's side with no room: layers' experts move to the host to make it",
                   hd ? hd->reason : "no decision");
 
+            // A draft the fitter could not measure (a DFlash drafter needs the target's context to be
+            // measured): nothing of it is in the placement, so the plan charges it whole from its file and
+            // header, and moves more experts for it than for the weights and KV alone.
+            {
+                ModelProfile read = drafted;
+                read.drafter.target_layers = 5;
+                read.n_embd = 2048;
+                Placement unseen = full;
+                unseen.fitted_with_draft = false;
+                unseen.device_context_bytes = 4 * GiB;
+                unseen.device_compute_bytes = 2 * GiB;
+                unseen.compute_width = 512;
+                unseen.device_compute_per_token = 2 * MiB;
+                Placement seen = unseen;
+                seen.fitted_with_draft = true;
+                const Plan whole = plan_run(cfg, card, read, unseen, PlanRequest{}, PlannerPolicy::defaults());
+                const Plan part = plan_run(cfg, card, read, seen, PlanRequest{}, PlannerPolicy::defaults());
+                const uint32_t dw_width = (uint32_t) std::max(1 + cfg.spec.draft_max, SpecConfig::draft_context_ubatch);
+                const uint64_t want = read.draft_file_bytes + unseen.device_context_bytes / model.n_layer +
+                                      unseen.at_width(dw_width).device_compute_bytes +
+                                      4ull * 5 * 2048 * (uint64_t) cfg.n_ctx;
+                const Decision * dw = find(whole, "drafter-on-devices");
+                check(whole.config.spec.drafter_on_devices && part.config.spec.drafter_on_devices &&
+                          whole.config.buft_overrides.size() > part.config.buft_overrides.size() && dw &&
+                          dw->reason.find(std::to_string(want >> 20) + " MiB of room") != std::string::npos,
+                      "draft home, a draft the fitter could not measure: charged whole from its file, more moved",
+                      dw ? dw->reason : "no decision");
+            }
+
             // A host nearly as fast on dense weights and slow on experts: the pass saves less than what a
             // verify would read on the host, so the draft stays there and the layers where they are.
             HardwareProfile even = card;

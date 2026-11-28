@@ -31,7 +31,9 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
     only where the faster pass is worth more than what it would have served; otherwise it drafts on the
     host. On a rented 32 GB card serving Qwen3.8-Flash-Next from the fitter's placement, the plan had
     left the draft model on the host, where it cost 10-15 ms against a 5.9 ms target step (code 56.2
-    tok/s drafting against 85.7 without, prose 41.9 against 98.7)
+    tok/s drafting against 85.7 without, prose 41.9 against 98.7). A draft file llama.cpp's fitter
+    cannot measure (a DFlash drafter, whose context needs the target's) is left out of the fit and
+    charged whole from its file and header, since the fitter fits without it and says nothing
     ([hardware-planning.md](docs/hardware-planning.md#where-a-draft-file-is-computed)).
   - **`--mtp-p-min`** applies to a draft model too: it is the draft's own confidence floor.
   - **What is proven, and what is not:** a new test (`drafter_session`) runs a streamed session over
