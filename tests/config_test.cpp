@@ -168,6 +168,15 @@ int main() {
         two.trial.width_narrow = 512;
         expect_fail("trial spec beside the width's", two);
         t.trial.spec_side = 2;
+        expect_fail("trial spec 2 with the head armed, not a draft model", t);
+        RunConfig dm = ok_base();
+        dm.spec.source = DraftSource::drafter;
+        dm.spec.drafter_file = "drafter.gguf";
+        dm.trial.spec_side = 2;
+        expect_ok("trial spec 2, a draft model drafting", dm);
+        dm.trial.spec_side = 1;
+        expect_fail("trial spec 1 with a draft model armed, not the head", dm);
+        t.trial.spec_side = 3;
         expect_fail("trial spec out of range", t);
     }
     {
@@ -513,6 +522,34 @@ int main() {
         // The same temperature is fine once speculation is off: the rejection is about the pair.
         c.spec.source = DraftSource::none;
         expect_ok("sampling without speculation stays valid", c);
+    }
+
+    // The drafter source: a draft model in a file of its own. The file is the source, so one without
+    // the other is a contradiction, and it shares the head's confidence floor (both draft by weights).
+    {
+        RunConfig c = ok_base();
+        c.spec.source = DraftSource::drafter;
+        expect_fail("the drafter source without its file is rejected", c);
+        c.spec.drafter_file = "drafter.gguf";
+        expect_ok("the drafter source with its file is valid", c);
+        c.spec.draft_p_min = 0.6f;
+        expect_ok("the confidence floor applies to a drafter", c);
+        c.spec.draft_p_min = 1.5f;
+        expect_fail("a confidence floor above 1 is rejected for a drafter", c);
+        c.spec.draft_p_min = 0.0f;
+        c.spec.draft_device = "CUDA0";
+        expect_fail("a draft device for a drafter left on the host is rejected", c);
+        c.spec.drafter_on_devices = true;
+        expect_ok("a draft device for a drafter on the devices", c);
+        c.spec.drafter_on_devices = false;
+        c.spec.draft_device.clear();
+        c.spec.source = DraftSource::mtp;
+        expect_fail("a drafter file with the MTP source is rejected", c);
+        c.spec.source = DraftSource::none;
+        expect_fail("a drafter file with speculation off is rejected", c);
+        c.spec.drafter_file.clear();
+        c.spec.drafter_on_devices = true;
+        expect_fail("drafter placement without the drafter source is rejected", c);
     }
 
     // The n-gram source: the same shared rules, plus its own gate, and no cross-talk with the

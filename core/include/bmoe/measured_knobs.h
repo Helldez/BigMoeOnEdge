@@ -79,6 +79,16 @@ struct MeasuredKnobs {
     // verify widens the experts a step reads.
     double spec_tps = 0.0;
     double no_spec_tps = 0.0;
+    // The same with the draft model the front-end paired with this one drafting (spec=drafter), against
+    // the same no_spec_tps: a third side of the same decision. On a rented 24 GB card a block-diffusion
+    // drafter at a draft of 5 took Qwen3.8-Flash-Next from 66 to 110-114 tok/s on code.
+    double drafter_tps = 0.0;
+    // What each draft's timed load accepted: the share of drafted tokens the model confirmed
+    // (mtp_accepted over mtp_drafted) and the width it drafted at, 0 where unmeasured. The plan prices
+    // a draft's other widths from it (draft pricing), and arms a measured draft at the width it was
+    // measured at.
+    double spec_accept = 0.0, drafter_accept = 0.0;
+    int spec_draft = 0, drafter_draft = 0;
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -152,7 +162,7 @@ struct MeasuredKnobs {
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
-    int spec_unviable = 0, no_spec_unviable = 0;
+    int spec_unviable = 0, no_spec_unviable = 0, drafter_unviable = 0;
     // What the device the model failed to open on said it had free when it failed, in MiB, as its
     // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
     // program lets go of it, a setting raises it), so a plan names the device again where it now
@@ -254,7 +264,7 @@ struct MeasuredKnobs {
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
                (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
                (spec_tps > 0.0) + (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) +
-               (int) prefill.size() + (int) device_answers.size();
+               (drafter_tps > 0.0) + (drafter_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
     }
 };
 
@@ -277,8 +287,18 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
 // The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side,
 // shared_device_side or spec_side), put where a plan reads it. One decision per load, in that
 // order, so a rate never answers two questions measured under one placement. Nothing when `trial`
-// names no side.
-void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);
+// names no side, and nothing for any side but the draft's own (spec_side) when the load drafted
+// (`drafted`: SpecConfig::enabled): a drafting load's tokens per second count the accepted drafts, so
+// its rate compares with no side timed without them. On a rented 24 GB card an n-gram load recorded
+// 151.6 tok/s for the file's mapping against 105.3 for the experts' copy, and every load after turned
+// the copy off and decoded 30-40% slower.
+void record_side_rate(const KnobTrialConfig & trial,
+                      double tokens_per_second,
+                      MeasuredKnobs & rec,
+                      bool drafted = false);
+// A draft side's acceptance (the share of drafted tokens confirmed) and the width it drafted at, beside
+// its rate: what the plan prices that draft's other widths from. Nothing for a side without a draft.
+void record_side_accept(const KnobTrialConfig & trial, double accepted_share, int draft, MeasuredKnobs & rec);
 // The same side, one more failed open on its count (MeasuredKnobs::*_unviable).
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec);
 // The failed-open count of the side `trial` names, null when it names none.

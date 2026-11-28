@@ -616,6 +616,11 @@ struct App {
         // here first: a plan made without it would size the cache into the projector's bytes.
         // dt:srv.load.projector
         if (cfg.mmproj.empty()) cfg.mmproj = lib.projector_for(cfg.model_path);
+        // The draft model of its folder, where the person named no draft: a side the plan weighs and
+        // times (choose_spec), named in the run only where the plan arms it.
+        // dt:srv.load.drafter
+        if (!cfg.spec.enabled() && cfg.spec.drafter_file.empty())
+            cfg.spec.drafter_file = lib.drafter_for(cfg.model_path);
         RoutingTrace kept;
         const bool have = routing.load(cfg.model_path, kept);
         // The knob verdicts kept for this model; a plan here always lets the first answer measure

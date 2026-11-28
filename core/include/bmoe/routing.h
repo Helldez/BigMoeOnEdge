@@ -117,6 +117,19 @@ HitCurve prior_hit_curve(uint64_t expert_bytes, uint64_t token_cycle_bytes, uint
 // set `model.hit_curve` from it. A trace that does not fit leaves the curve absent with the reason in
 // `model.hit_curve.rejected`, so the plan is the one it would be without a trace.
 // `half_life`: the eviction policy the run will use (replay_cache).
-void attach_routing(ModelProfile & model, const RoutingTrace & trace, uint32_t n_expert_used, int half_life);
+// `verify_widths`: the verify widths (1 + draft) to replay the trace at as well, into
+// `model.verify_curves` (verify_trace).
+void attach_routing(ModelProfile & model,
+                    const RoutingTrace & trace,
+                    uint32_t n_expert_used,
+                    int half_life,
+                    const std::vector<uint32_t> & verify_widths = {});
+// The trace as a speculative decode of `width` positions per step would ask it of the cache: every
+// `width` consecutive decoded tokens become one step, one batch per layer holding the union of the
+// experts those tokens picked there, the prompt's batches left as they were. `bytes_per_step` is the
+// expert bytes one step routes through, on average.
+RoutingTrace verify_trace(const RoutingTrace & trace, uint32_t width, uint64_t & bytes_per_step);
+// Sizes a verify curve is replayed at: coarser than the token's, since it only weighs a draft.
+inline constexpr uint32_t k_verify_curve_points = 16;
 
 } // namespace bmoe

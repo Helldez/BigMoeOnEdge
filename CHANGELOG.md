@@ -11,6 +11,38 @@ branch (`bmoe/moe-cache-exp-2611`, and `bmoe/lossless-cache-2811` on top of it, 
 it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
 
 ### Added
+- **Draft models** (`--drafter --drafter-file FILE`, from #534, carried here until it lands): a third draft source for speculative
+  decoding, beside the model's own head (`--mtp`) and the n-gram lookup (`--ngram`).
+  - **What it is:** a small network trained for one model and shipped in a GGUF of its own, which
+    reads the model's hidden states and proposes the next tokens; a block-diffusion drafter (DFlash,
+    DSpark) proposes a whole block in one pass. The model verifies the block in one wider decode
+    and keeps only what it would have produced itself, as with the other sources, so nothing is
+    approximated.
+  - **Nothing names a kind of drafter.** What the file is comes from its header, read by llama.cpp's
+    own speculative driver, which also drafts with it; the engine turns that answer into how the
+    file is loaded and what context it drafts in, in one module (`core/src/engine/draft_driver`).
+    A kind the driver learns with a submodule bump needs no change here. A file that is not a draft,
+    or whose vocabulary is not the model's, is refused at load.
+  - **Placement:** `--drafter-on-devices` puts the draft model on the devices, and `--draft-device NAME`
+    on one of them. With `--auto` the plan puts a draft file (a draft model or an MTP head file) on the
+    device that computes dense weights fastest, by its measured rate, whatever side serves. Beside a
+    device expert cache the cache gives it room. Beside the fitter's layers it takes the room the plan
+    leaves free, or room whole layers' experts give by moving to the host. Either way the room is taken
+    only where the faster pass is worth more than what it would have served; otherwise it drafts on the
+    host. On a rented 32 GB card serving Qwen3.8-Flash-Next from the fitter's placement, the plan had
+    left the draft model on the host, where it cost 10-15 ms against a 5.9 ms target step (code 56.2
+    tok/s drafting against 85.7 without, prose 41.9 against 98.7). A draft file llama.cpp's fitter
+    cannot measure (a DFlash drafter, whose context needs the target's) is left out of the fit and
+    charged whole from its file and header, since the fitter fits without it and says nothing
+    ([hardware-planning.md](docs/hardware-planning.md#where-a-draft-file-is-computed)).
+  - **`--mtp-p-min`** applies to a draft model too: it is the draft's own confidence floor.
+  - **What is proven, and what is not:** a new test (`drafter_session`) runs a streamed session over
+    the tiny MoE fixture with a tiny drafter generated for it, through draft, verify and rollback
+    on two turns. Off by default. Measured on a 16 GB laptop, it pays only where the experts run on
+    the device from its cache (#741 + #749): Qwen3.6-35B-A3B Q4_K_M with a DFlash drafter at draft 3
+    goes from 24.2 to 37.7 tok/s on code (20.1 to 30.4 on prose), Qwen3.8-Flash-Next Q2_0 from 12.9
+    to 14.8; on main's streamed path it measured no gain (17.0 against 21.4 on code). See
+    [docs/drafter.md](docs/drafter.md).
 - **A streamed model computed on a device that shares the host's memory.** On a unified-memory
   machine a model larger than its memory streamed its experts to the cores. `--auto` now prices,
   against that stream, every layer on the device with the stream's expert cache moved onto it, its
@@ -90,6 +122,36 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   A separate drafter's file has a place in the model's facts (`ModelProfile::draft_file_bytes`) and joins
   the rule once this engine opens one
   ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+- **`--auto` weighs a draft model paired with the model beside its own head and no draft.** On a rented
+  24 GB card a block-diffusion draft model at a draft of 5 took Qwen3.8-Flash-Next from 66 to 110-114 tok/s
+  on code, and `--auto` armed none. The front-end now pairs one: the server takes the draft model of the
+  model's folder by the facts the speculative driver checks, read from both headers: the same vocabulary
+  (token count and a hash of every token), the same hidden width, and target layers the model has
+  (`drafter_for`); exactly one file must fit, and no name decides, and the CLI takes a `--drafter-file` typed with `--auto` and without `--drafter`. The
+  engine never looks for a file. The draft rule then has up to three sides: the head (`--trial-spec 1`),
+  the draft model (`--trial-spec 2`, its rate kept as `drafter_tps`) and none (`--trial-spec 0`). It times
+  each on a load of its own and keeps the fastest only where it decodes faster than none by 10%. The
+  draft model goes on the device of a device expert cache and is charged there. Its context now counts
+  the buffer the target keeps of the input of the layers it reads (F32, `target_layers × n_embd ×
+  n_ctx`, the layer count read from its header), its blocks' KV and its compute. The width stays
+  `PlannerPolicy::draft_tokens` (3); a 3-against-5 side would cost a load per draft and is not timed. The
+  plan's own path has not run on hardware yet.
+- **A draft is priced at the cache it leaves, and armed at the width priced faster.** A verify reads the
+  union of its positions' experts, so a draft's gain is the cache's: +56% on Qwen3.6-35B on a 16 GB laptop
+  whose cache holds much of the model, +15% on Flash-Next there (hit 90.6% -> 84.9% at a draft of 3), +70%
+  on a 24 GB card with a 15 GB cache. The plan now replays the model's routing record as verifies
+  (`verify_trace`, per layer the union of `1 + draft` consecutive tokens' experts) and prices each draft at
+  each width (3, or 5, `PlannerPolicy::draft_tokens_wide`): the verify step at the device's rates, hits and
+  misses, the draft's own pass, and the tokens a verify yields at the acceptance its load measured
+  (`spec_accept`, `drafter_accept`, new in the record) or a prior of 60%. It arms the faster width, does
+  not time a draft priced inside the margin over none, and lets a measured rate override the price.
+  Without a record there is no price, and the coarse bound and the loads decide, as before, on the loads
+  the person makes anyway. A side that streams nothing now records its routing where the model has no record yet
+  (`record-unstreamed`, set by the plan; its documentation already said so, and no rule did): a model served
+  from a device cache on every load, like Flash-Next on the laptop, never got one, and was never priced.
+  It records only on a load that times nothing, so no measured rate carries the recording's barriers. The pairing
+  rule changed too: a drafter's `general.name` is whatever its conversion wrote (`Qwendflash` beside
+  `Qwen3.6 35B A3B`), so the server pairs by vocabulary, hidden width and target layers.
 - **A draft's bytes are charged on a card before its device expert cache is sized.** On a rented 24 GB card,
   a 15.2-15.6 GB device cache left no room for a draft of 3, and the session ran out of device memory
   reserving it. A draft opens after the fitter's placement, so it was in no ledger. Where the device's
@@ -114,6 +176,14 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.
+
+### Fixed
+- **A load that drafts no longer records its rate for another decision across loads.** A drafting load's
+  tokens per second count the accepted drafts, and were recorded as the rate of whatever side the load
+  served: on a rented 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3
+  for the experts' copy timed without drafts, and every load after turned the copy off and decoded
+  30-40% slower. A load that drafts (`--mtp`, `--ngram`, a draft model) now times only the draft's own
+  side (`--trial-spec`).
 
 ### Removed
 - **The device cache's lookup inside the graph (the host call) is gone, with the CPU-miss threads and the

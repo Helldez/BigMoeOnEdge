@@ -26,6 +26,17 @@ namespace bmoe {
 
 namespace {
 
+// The verify widths a draft may run at, for the routing record to be replayed at (draft pricing): the
+// plan's two widths, and the run's own where it names one.
+std::vector<uint32_t> draft_verify_widths(const RunConfig & cfg) {
+    const PlannerPolicy pol = PlannerPolicy::defaults();
+    std::vector<uint32_t> w = {(uint32_t) (1 + pol.draft_tokens), (uint32_t) (1 + pol.draft_tokens_wide)};
+    const uint32_t typed = (uint32_t) (1 + std::max(0, cfg.spec.draft_max));
+    if (std::find(w.begin(), w.end(), typed) == w.end()) w.push_back(typed);
+    std::sort(w.begin(), w.end());
+    return w;
+}
+
 // The capacity fitter's placement of the facts' model at `width` tokens wide, asked of the fitter the
 // first time and kept with the facts (AutoPlan::placement_at_width). `snapshot` names the memory
 // snapshot taken after a fit that ran.
@@ -243,6 +254,15 @@ Plan give_way(
 }
 
 Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
+    // A draft model named without spec=drafter is the one the front-end paired with this model
+    // (ModelProfile::drafter): a side of the draft decision, not a draft the run makes. The plan names
+    // it again only where it arms it, so the configuration it starts from carries none.
+    // dt:plan.facts.drafter
+    if (!cfg.spec.drafter_file.empty() && !cfg.spec.is_drafter()) {
+        RunConfig unpaired = cfg;
+        unpaired.spec.drafter_file.clear();
+        return give_way(facts, unpaired, req, model, plan_layout(facts, unpaired, req, model));
+    }
     return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model));
 }
 
@@ -285,11 +305,24 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
     starting(); // model
     r.model = probe_model(path, probe_engine_layers(path));
-    // The head of a file of its own is a file like the model: its size is what placing it costs.
-    if (!cfg.spec.mtp_head.empty()) {
+    // A draft file (the head's, or a drafter) is a file like the model: its size is what placing it costs.
+    if (cfg.spec.has_draft_file()) {
         std::error_code ec;
-        const auto head_size = std::filesystem::file_size(cfg.spec.mtp_head, ec);
-        if (!ec) r.model.mtp_head_bytes = (uint64_t) head_size;
+        const auto draft_size = std::filesystem::file_size(cfg.spec.draft_file(), ec);
+        if (!ec) r.model.draft_file_bytes = (uint64_t) draft_size;
+    }
+    // A draft model the run names, drafting or paired: what its header says it costs beside the model,
+    // its blocks and the model's layers whose input it reads (draft_device_bytes).
+    if (!cfg.spec.drafter_file.empty()) {
+        const GgufHeaderFacts h = probe_gguf_header(cfg.spec.drafter_file.c_str());
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(cfg.spec.drafter_file, ec);
+        if (h.ok && h.reads_target) {
+            r.model.drafter.path = cfg.spec.drafter_file;
+            r.model.drafter.bytes = ec ? 0 : (uint64_t) size;
+            r.model.drafter.n_block = (uint32_t) std::max(0, h.n_block);
+            r.model.drafter.target_layers = (uint32_t) std::max(0, h.n_target_layers);
+        }
     }
     // The projector the same: held whole for the run, so its size is what it costs where it goes.
     if (!cfg.mmproj.empty()) {
@@ -302,7 +335,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     if (opt.routing)
         attach_routing(r.model, *opt.routing,
                        cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used,
-                       cfg.moe.cache_freq_half_life);
+                       cfg.moe.cache_freq_half_life, draft_verify_widths(cfg));
     // What an earlier load measured about the lossless knobs, when it was this machine and engine.
     if (opt.knobs)
         // dt:plan.facts.knobs

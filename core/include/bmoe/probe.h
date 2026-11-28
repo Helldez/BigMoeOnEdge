@@ -64,7 +64,12 @@ struct GgufHeaderFacts {
     int n_block = 0;
     int n_nextn = 0;
     bool reads_target = false;
-    std::string name; // `general.name`: the base model, shared by the files of one conversion
+    int n_target_layers = 0;   // how many of the target's layers it reads (`<arch>.target_layers`)
+    int target_layer_max = -1; // the deepest of them, -1 where it names none
+    int n_embd = 0;            // `<arch>.embedding_length`
+    int n_vocab = 0;           // the tokenizer's token count, 0 without one
+    uint64_t vocab_hash = 0;   // its model and every token's text, hashed (gguf_offsets.h)
+    std::string name;          // `general.name`: the base model, shared by the files of one conversion
     bool ok = false;
 };
 GgufHeaderFacts probe_gguf_header(const char * model_path);

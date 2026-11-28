@@ -229,6 +229,21 @@ std::string projector_for(const GgufHeaderFacts & model, const std::vector<Compa
     return unnamed_side.size() == 1 && projectors.size() == 1 ? unnamed_side.front()->path : "";
 }
 
+std::string drafter_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder) {
+    if (model.n_vocab <= 0 || model.n_embd <= 0 || model.n_block <= 0) return "";
+    const CompanionFile * pick = nullptr;
+    for (const CompanionFile & f : folder) {
+        const GgufHeaderFacts & d = f.header;
+        if (!d.ok || !d.reads_target || file_role(d) != FileRole::Draft) continue;
+        if (d.n_vocab != model.n_vocab || d.vocab_hash != model.vocab_hash) continue;
+        if (d.n_embd != model.n_embd) continue;
+        if (d.target_layer_max < 0 || d.target_layer_max >= model.n_block) continue;
+        if (pick) return ""; // two draft models fit: the person's choice
+        pick = &f;
+    }
+    return pick ? pick->path : "";
+}
+
 FileRole file_role_hint(const std::string & name) {
     const size_t slash = name.find_last_of('/');
     const std::string base = lower(slash == std::string::npos ? name : name.substr(slash + 1));

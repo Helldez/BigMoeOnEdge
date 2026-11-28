@@ -283,6 +283,7 @@ flowchart TD
     srv_config_paths["<b>srv.config.paths</b><br/>Paths that write are launch-only"]
     srv_load_auto["<b>srv.load.auto</b><br/>Plan before loading"]
     srv_load_projector["<b>srv.load.projector</b><br/>A vision model plans with its projector"]
+    srv_load_drafter["<b>srv.load.drafter</b><br/>A model plans with the draft model of its folder"]
     srv_load_plan_ok["<b>srv.load.plan-ok</b><br/>The plan replaces the plan layer"]
     srv_load_other_side["<b>srv.load.other-side</b><br/>A plan that names a side gets its other side"]
     srv_plan_other_same["<b>srv.plan.other-same</b><br/>The re-plan chose the same side: no fallback"]
@@ -299,6 +300,7 @@ flowchart TD
     srv_request_sampling["<b>srv.request.sampling</b><br/>A request's own sampling, when it sends any"]
     srv_layers -->|"API requests"| srv_api_think
     srv_load_auto -->|"planning"| srv_load_projector
+    srv_load_auto -->|"planning"| srv_load_drafter
     srv_load_auto -->|"planned"| srv_load_plan_ok
     srv_load_plan_ok -->|"ok"| srv_load_other_side
     srv_load_other_side -->|"names a side"| srv_plan_other_same
@@ -388,6 +390,16 @@ flowchart TD
 - code: `server/http_server.cpp` · `measure_plan`
 - condition: `if (cfg.mmproj.empty()) cfg.mmproj = lib.projector_for(cfg.model_path);`
 - The projector is the companion `.gguf` in the same folder.
+
+#### `srv.load.drafter` — A model plans with the draft model of its folder
+- parent: `srv.load.auto`
+- when: planning
+- code: `server/http_server.cpp` · `measure_plan`
+- condition: `if (!cfg.spec.enabled() && cfg.spec.drafter_file.empty()) cfg.spec.drafter_file = lib.drafter_for(cfg.model_path);`
+- Where no draft is named, the folder's one draft model with the model's vocabulary (token count and
+  hash), hidden width and target layers within its blocks (`drafter_for`) is paired; none or several
+  is no choice, and no name decides. The plan weighs it (`plan.facts.drafter`, `plan.spec`)
+  and names it in the run only where it arms it.
 
 #### `srv.load.plan-ok` — The plan replaces the plan layer
 - parent: `srv.load.auto`
@@ -533,6 +545,7 @@ flowchart TD
     plan_facts_isolated["<b>plan.facts.isolated</b><br/>Devices probed out of process"]
     plan_facts_routing["<b>plan.facts.routing</b><br/>The model's own hit curve, when a routing record fits"]
     plan_facts_knobs["<b>plan.facts.knobs</b><br/>Verdicts measured on this machine, this engine version"]
+    plan_facts_drafter["<b>plan.facts.drafter</b><br/>A draft model named without --drafter is a paired one"]
     plan_facts_gate["<b>plan.facts.gate</b><br/>Time the gate GEMV (route-ahead only)"]
     plan_facts_storage["<b>plan.facts.storage</b><br/>Measure the storage"]
     plan_facts_backends["<b>plan.facts.backends</b><br/>Which backend of a card the fitter sees"]
@@ -545,12 +558,14 @@ flowchart TD
     plan_backends["<b>plan.backends</b><br/>One backend per card"]
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
+    plan_record_unstreamed["<b>plan.record-unstreamed</b><br/>A run that does not stream records its routing where no record exists"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
     plan_tier_rates["<b>plan.tier.rates</b><br/>The device must read experts faster than the host"]
     plan_tier_measured["<b>plan.tier.measured</b><br/>Cache on the device or not: priced, then measured"]
     plan_tier_arm["<b>plan.tier.arm</b><br/>Arm the device cache"]
     plan_width["<b>plan.width</b><br/>The graph width (n_ubatch)"]
+    plan_draft_home["<b>plan.draft-home</b><br/>A draft file goes on the device that computes it fastest"]
     plan_width_bound["<b>plan.width.bound</b><br/>The device bound or the full width: weigh across loads"]
     plan_width_loads["<b>plan.width.loads</b><br/>Narrow (layers on the device) or wide (prompts faster)"]
     plan_regime["<b>plan.regime</b><br/>Does the model fit, stream its experts, or not even hold its dense part?"]
@@ -581,8 +596,8 @@ flowchart TD
     plan_overlap_prompts["<b>plan.overlap.prompts</b><br/>Overlap would keep prompts off the device"]
     plan_threads["<b>plan.threads</b><br/>Threads"]
     plan_threads_trial["<b>plan.threads.trial</b><br/>Time other thread counts on this load"]
-    plan_spec["<b>plan.spec</b><br/>A model drafts where a verify's reads stay in memory"]
-    plan_spec_sides["<b>plan.spec.sides</b><br/>Draft or not: lost, measured, unmeasured"]
+    plan_spec["<b>plan.spec</b><br/>A model drafts where its verify is priced faster than no draft"]
+    plan_spec_sides["<b>plan.spec.sides</b><br/>Which draft, or none: lost, untimed, measured"]
     plan_give_way -->|"cache under one cycle"| plan_give_way_checkpoints
     plan_give_way -->|"still under one cycle"| plan_give_way_ctx
     plan_tier -->|"a device qualifies"| plan_tier_rates
@@ -601,7 +616,8 @@ flowchart TD
     plan_spec -->|"asked"| plan_spec_sides
     plan_facts_isolated -.-> plan_facts_routing
     plan_facts_routing -.-> plan_facts_knobs
-    plan_facts_knobs -.-> plan_facts_gate
+    plan_facts_knobs -.-> plan_facts_drafter
+    plan_facts_drafter -.-> plan_facts_gate
     plan_facts_gate -.-> plan_facts_storage
     plan_facts_storage -.-> plan_facts_backends
     plan_facts_backends -.-> plan_layout_narrow
@@ -611,10 +627,12 @@ flowchart TD
     plan_prior_curve -.-> plan_backends
     plan_backends -.-> plan_held_whole
     plan_held_whole -.-> plan_shared_cache
-    plan_shared_cache -.-> plan_unplannable
+    plan_shared_cache -.-> plan_record_unstreamed
+    plan_record_unstreamed -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
-    plan_width -.-> plan_regime
+    plan_width -.-> plan_draft_home
+    plan_draft_home -.-> plan_regime
     plan_regime -.-> plan_placement
     plan_placement -.-> plan_layers_home
     plan_layers_home -.-> plan_staging
@@ -666,6 +684,14 @@ flowchart TD
   "measured" side reads them.
 - not found → every knob is unmeasured.
 - The match is exact: the hardware fingerprint and the engine version.
+
+#### `plan.facts.drafter` — A draft model named without `--drafter` is a paired one
+- parent: —
+- code: `core/src/plan/auto_plan.cpp` · `plan_on_facts`
+- condition: `if (!cfg.spec.drafter_file.empty() && !cfg.spec.is_drafter()) {`
+- A `drafter-file` with no `spec=drafter` (typed with `--auto`, or paired by the server) → the plan
+  starts from a configuration without it, and `ModelProfile::drafter` (its size, blocks and
+  `target_layers` from its header) makes it a side of `plan.spec`. The engine never looks for a file.
 
 #### `plan.facts.gate` — Time the gate GEMV (route-ahead only)
 - parent: —
@@ -785,6 +811,18 @@ flowchart TD
   `trial.answer_device` unless confirmed, `fallback` = the streaming plan.
 - Otherwise the stream stays, timed as it serves (`trial.device_tier = 0`).
 
+#### `plan.record-unstreamed` — A run that does not stream records its routing where no record exists
+- parent: —
+- code: `core/src/plan/planner.cpp` · `choose_record_unstreamed`
+- condition: `if (!req.measure_knobs || !m.is_moe || c.moe.enabled || c.moe.routing_record_tokens <= 0) return;`
+- Asked by `plan_run` last. Only the streamer observes the routing by itself, so a run that serves
+  from a device expert cache or holds the model whole records nothing. Where the front-end keeps
+  records and the model has no record of its own (`hit_curve.measured` false) → `record_unstreamed`
+  on: one barrier per MoE layer per token until the record is full. The next plan prices the cache
+  and the drafts (`plan.spec`) on it. A pinned `record-unstreamed` is kept.
+- Only on a load that times nothing (no trial of any kind and no answer check): a rate measured beside
+  the barriers would carry them. Until then the loads that time a side decide unpriced.
+
 #### `plan.unplannable` — Nothing to plan: unknown model, dense model, unknown memory
 - parent: —
 - code: `core/src/plan/planner.cpp` · `declines_unplannable`
@@ -839,7 +877,7 @@ flowchart TD
 - condition: `if (tier.resplit) {`
 - Every expert layer goes to the host overrides, and the cache is armed on the device.
 - A better split across cards is applied when it holds more.
-- An MTP head goes on the devices when it fits with one token cycle to spare.
+- A draft file the run names is placed later, by `plan.draft-home`.
 - Overlap, two-wave and the overlap trial go off: they do not combine with a device cache.
 
 #### `plan.width` — The graph width (`n_ubatch`)
@@ -852,6 +890,24 @@ flowchart TD
 - It is bounded at 8192 when a device computes the graph, and never narrower than 512 or an
   image's floor.
 - Pinned, or the placement unprobed → the default.
+
+#### `plan.draft-home` — A draft file goes on the device that computes it fastest
+- parent: —
+- code: `core/src/plan/planner.cpp` · `place_draft_file`
+- condition: `if (!knob.on_devices || s.req.is_pinned(knob.param)) return;`
+- Asked after `plan.width`, on any side that serves, where the run names a draft file (an MTP head
+  file, a draft model) and its placement (`mtp-head-on-devices`, `drafter-on-devices`) is not pinned.
+  Where every device reads the host's memory → nothing: one pool.
+- The devices weighed: with memory of their own, faster than the host on dense weights (the measured
+  rates, `dense_rates`), fastest first; a pinned `draft-device` is the only one.
+- Beside a device expert cache: the cache gives the weights (on several cards, by that card's share)
+  and keeps one token cycle. With a routing record, the verify at the cache that is left is priced
+  against the faster pass, and where it costs more → the host. Without one → the device.
+- Elsewhere: in the room the plan leaves free on the device (`Placement::device_spare`); short of it,
+  whole layers' experts there move to the host, lowest first, priced as a verify's share of them read
+  on the host (and from flash where the host would hold more than it may). The cheapest device whose
+  pass and room cost less than the host's pass → there; otherwise → the host.
+- Several devices of their own → `draft-device` names the one chosen.
 
 #### `plan.width.bound` — The device bound or the full width: weigh across loads
 - parent: `plan.width`
@@ -1141,37 +1197,50 @@ flowchart TD
 - Up to 2 candidates nearest the incumbent, from the core classes' running sums. Candidates the
   sweep already answered are left out.
 
-#### `plan.spec` — A model drafts where a verify's reads stay in memory
+#### `plan.spec` — A model drafts where its verify is priced faster than no draft
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_spec`
-- condition: `if (source == DraftSource::none || !req.measure_knobs) return;`
-- condition: `if (!verify_reads_held(sized, m, draft, where)) return;`
+- condition: `if (all.empty() || !req.measure_knobs) return;`
+- condition: `} else if (!verify_reads_held(a.config, m, d, a.where)) {`
 - Asked by `plan_run` on the plan as it will serve. The model has a draft
-  (`draft_source`: its own MTP head; a drafter's file, `ModelProfile::draft_file_bytes`, once this
-  engine opens one), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are not
-  pinned, no draft is armed, and this load times no other side and checks no device's answers.
+  (`draft_options`: its own MTP head, and a draft model the front-end paired with it,
+  `ModelProfile::drafter`), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are
+  not pinned, no draft is armed, and this load times no other side and checks no device's answers.
   Otherwise → nothing.
-- `verify_reads_held`: the model held whole, or a device expert cache of at least `1 + draft` token
-  cycles (`token_cycle_bytes`), on any device. Streamed on the cores → nothing. On a device with
-  memory of its own the cache first gives the draft its bytes (`draft_device_bytes`), and the rest has
-  to hold the verify.
-- The width is `PlannerPolicy::draft_tokens` (3), or a typed `--draft`.
+- Each draft is armed as it would run, at each width it may run at (a typed `--draft`; the width its
+  load was measured at; else `draft_tokens` 3 and `draft_tokens_wide` 5): a draft model names the
+  paired file and goes where `plan.draft-home` would put it (unless `drafter-on-devices` is pinned).
+  Beside a card's device expert cache both homes are priced, the device's pass with the cache that is
+  left and the host's with the whole cache, and the faster kept (unpriced → the device); the cache
+  gives the draft its bytes (`draft_device_bytes`). Elsewhere, on a machine with a device of its own,
+  the plan is made again with the draft model armed, and that plan serves where it put the draft on
+  a device.
+- Priced (`step_rates`, `step_seconds`): the verify step of `1 + draft` positions from the routing
+  record replayed as verifies (`ModelProfile::verify_curves`; without a record, the bound of `1 + draft`
+  token cycles), its hits at the device's expert rate and its misses through the miss path, the draft's
+  own pass, and the tokens a verify yields at the acceptance its load measured or the prior
+  (`draft_accept_prior`). The faster width is kept. An untimed draft priced inside the margin over no
+  draft is out.
+- Unpriced (a rate unmeasured) → the coarse bound, `verify_reads_held`: the model held whole, or a
+  device expert cache of `1 + draft` token cycles. Streamed on the cores → no price and no draft.
 - An armed draft that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
   says why.
 
-#### `plan.spec.sides` — Draft or not: lost, measured, unmeasured
+#### `plan.spec.sides` — Which draft, or none: lost, untimed, measured
 - parent: `plan.spec`
 - when: asked
 - code: `core/src/plan/planner.cpp` · `choose_spec`
-- condition: `if (lost(mk.spec_unviable)) {`
-- condition: `if (on > 0.0 && off > 0.0) {`
-- condition: `if (on <= 0.0) {`
+- condition: `if (alive.empty()) {`
+- condition: `if (a->o.tps <= 0.0) {`
+- condition: `if (off > 0.0) {`
 - condition: `if (lost(mk.no_spec_unviable)) {`
-- The draft failed to open twice → off.
-- Both sides timed → the draft only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
-- The draft not timed → `spec = mtp`, `trial.spec_side = 1`: this load drafts and times it.
-- The draft timed, not the decode without it → `trial.spec_side = 0`, unless loads without it failed
-  twice (→ the draft).
+- Every draft failed to open twice → off.
+- A draft not timed → this load arms it (`spec = mtp` or `drafter`, `trial.spec_side` 1 or 2) and
+  times it: one draft a load, the head first.
+- Every draft timed and the decode without one too → the fastest draft only where it decodes faster
+  than none by `PlannerPolicy::min_draft_win` (10%); otherwise off.
+- Every draft timed, not the decode without one → `trial.spec_side = 0`, unless loads without a draft
+  failed twice (→ the fastest draft).
 
 ## open — loading a model
 
@@ -1208,7 +1277,7 @@ flowchart TD
     open_load_drop_unmappable["<b>open.load.drop-unmappable</b><br/>Leave out devices that cannot map host memory"]
     open_load_device_list["<b>open.load.device-list</b><br/>The devices the plan named"]
     open_load_top_k["<b>open.load.top-k</b><br/>Override the experts per token"]
-    open_load_mtp_head["<b>open.load.mtp-head</b><br/>A separate MTP head file"]
+    open_load_mtp_head["<b>open.load.mtp-head</b><br/>A draft file of its own (an MTP head or a drafter)"]
     open_read_layout["<b>open.read.layout</b><br/>Which tensors are the routed experts"]
     open_read_layout_rule["<b>open.read.layout.rule</b><br/>An expert tensor: a block's 3-D weight indexed by the expert count"]
     open_read_chat["<b>open.read.chat</b><br/>Chat template"]
@@ -1402,11 +1471,14 @@ flowchart TD
 - condition: `if (cfg.n_expert_used > 0) {`
 - yes → a llama.cpp kv override `<arch>.expert_used_count`, checked against the file's expert count.
 
-#### `open.load.mtp-head` — A separate MTP head file
+#### `open.load.mtp-head` — A draft file of its own (an MTP head or a drafter)
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
-- condition: `if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {`
-- yes → the head loads as a second model, on the devices if `mtp_head_on_devices`.
+- condition: `if (cfg.spec.has_draft_file()) {`
+- yes → its kind is read from its header by llama.cpp's speculative driver; a file the driver has no
+  draft for, or a drafter whose vocabulary is not the model's, fails the open. Otherwise it loads as a
+  second model, on the devices if `draft_file_on_devices()` (on the one `draft-device` names, where
+  set; a name this build has no device for fails the open).
 
 #### `open.read.layout` — Which tensors are the routed experts
 - parent: —
@@ -1501,8 +1573,9 @@ flowchart TD
 #### `open.ctx.mtp` — The MTP draft context
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::create_contexts`
-- condition: `if (cfg.spec.is_mtp()) {`
-- An MTP context of at least `draft_max + 1` width. A separate head file has no eval callback, so it
+- condition: `if (cfg.spec.uses_driver()) {`
+- A draft context of at least `draft_max + 1` width (`detail::draft_context_params`): of the MTP type
+  for a head, with the per-sequence output cap the driver needs for a drafter. A separate head file has no eval callback, so it
   is not streamed. A head inside the model streams with it.
 
 #### `open.answer-check` — Compare the device's answers with the cores'
@@ -1550,7 +1623,7 @@ flowchart TD
 #### `open.spec` — Speculation and checkpoints
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::init_speculation`
-- condition: `if (cfg.spec.is_mtp() && !init_mtp_driver(o)) return false;`
+- condition: `if (cfg.spec.uses_driver() && !init_draft_driver(o)) return false;`
 - condition: `const bool recurrent_state = llama_model_is_recurrent(model.get()) || llama_model_is_hybrid(model.get());`
 - MTP → the upstream speculative driver. Any draft → a batch wide enough to verify it.
 - Checkpoints are configured from `ctx_checkpoints`:
@@ -1963,13 +2036,13 @@ flowchart TD
 #### `req.media-spec-off` — An image in the conversation turns speculation off
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::prefill`
-- condition: `if (im.media_in_conversation && (spec_on || mtp_on)) {`
+- condition: `if (im.media_in_conversation && (spec_on || driver_on)) {`
 - Speculation stays off until the next new chat.
 
 #### `req.sampled-spec-off` — A request that samples turns speculation off
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::prefill`
-- condition: `if (im.sampled_in_conversation && (spec_on || mtp_on)) {`
+- condition: `if (im.sampled_in_conversation && (spec_on || driver_on)) {`
 - A request whose sampling can move the choice (temperature above 0, a penalty, a bias) marks the
   conversation. Speculation is then off until the next new chat, as for an image: the draft context
   misses the turn.
@@ -2060,8 +2133,8 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::draft`
 - condition: `if (!spec_on || room <= 0) return true;`
-- condition: `if (mtp_on) {`
-- MTP → the upstream draft, capped at the room.
+- condition: `if (driver_on) {`
+- A head or a drafter → the upstream driver's draft, capped at the room.
 - n-gram → `req.draft.ngram`.
 
 #### `req.draft.ngram` — An n-gram draft from the context

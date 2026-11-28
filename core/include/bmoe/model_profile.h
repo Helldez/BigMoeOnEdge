@@ -99,6 +99,18 @@ struct HitCurve {
     double hit_share(uint64_t cache_bytes) const;
 };
 
+// What a speculative verify of `width` positions asks of an expert cache, replayed from the model's own
+// routing record (attach_routing): the bytes one verify routes through - per layer the union of the
+// experts its positions picked - and the decode hit share at every cache size, the same curve as the
+// token's own (HitCurve) but over verify steps. A verify reads that union, so where the cache holds a
+// token's experts it can still miss a verify's: on a 16 GB laptop Flash-Next's hit went from 90.6% to
+// 84.9% at 4 positions and 71.4% at 9.
+struct VerifyCurve {
+    uint32_t width = 0;
+    uint64_t bytes_per_step = 0;
+    HitCurve curve;
+};
+
 struct ModelProfile {
     std::string arch; // for the rationale and for the record; never branched on
     bool is_moe = false;
@@ -147,9 +159,10 @@ struct ModelProfile {
     uint64_t expert_bytes = 0;         // every routed-expert tensor
     uint64_t dense_bytes = 0;          // everything else: embeddings, attention, norms, head
     uint64_t largest_dense_tensor = 0; // the one a residency policy may not be able to hold
-    // The MTP head file's size, where the run names one (SpecConfig::mtp_head): what placing the
-    // head on a device costs that device. 0 where there is no file or it cannot be read.
-    uint64_t mtp_head_bytes = 0;
+    // The draft file's size, where the run names one (SpecConfig::draft_file: the MTP head's file or
+    // a drafter): what placing it on a device costs that device. 0 where there is no file or it
+    // cannot be read.
+    uint64_t draft_file_bytes = 0;
     // The multi-token-prediction block inside this file, summed over its tensors: excluded from every
     // figure above because llama.cpp loads it only when a draft asks, and then it is loaded whole,
     // experts and all, wherever its block is placed. 0 where the file has none.
@@ -229,21 +242,29 @@ struct ModelProfile {
     // streaming however large it is. No size threshold or architecture name is involved.
     bool tied_output_head = false;
     bool has_mtp = false; // a trained multi-token-prediction block is present
-    // Bytes of a separate draft model the front-end found for this one (a drafter file beside it), 0 for
-    // none. Not read from this file. The plan's draft rule asks whether the model has a draft at all
-    // (planner.cpp, draft_source): today only its own head answers, and a drafter's file joins it there
-    // once this engine can open one, so the rule itself names no kind of draft. Its weights are what a
-    // device holding the draft is charged before its expert cache is sized (draft_device_bytes).
-    uint64_t draft_file_bytes = 0;
+    // A draft model the front-end paired with this one (a drafter file trained for it: the server from
+    // the headers of the model's folder, the CLI from a --drafter-file typed without --drafter). The
+    // engine never looks for one. The plan's draft rule weighs it beside the model's own head
+    // (planner.cpp, draft_sources) and, where it arms it, names this file as SpecConfig::drafter_file.
+    // Empty `path`: no drafter paired.
+    struct PairedDrafter {
+        std::string path;
+        uint64_t bytes = 0;         // the file's size: what placing its weights on a device costs
+        uint32_t n_block = 0;       // its blocks (`<arch>.block_count`), each holding a KV of its own
+        uint32_t target_layers = 0; // the model's layers whose input it reads (`<arch>.target_layers`)
+    } drafter;
     // What a draft's context takes on a device beyond its weights, where the front-end that opens it
-    // knows better than the plan's derivation (its KV, its compute, a buffer of the target's layer input
-    // a drafter may read): 0 to have the plan derive it from the target's placement.
+    // knows better than the plan's derivation (its KV, its compute, the model's layer input a drafter
+    // reads): 0 to have the plan derive it (draft_device_bytes).
     uint64_t draft_context_bytes = 0;
 
     // This model's own hit-rate curve, from a routing trace it recorded on an earlier run
     // (attach_routing in bmoe/routing.h). Not read from the file: a front-end that kept a trace hands
     // it back, and without one the curve is absent and the plan is what it always was.
     HitCurve hit_curve;
+    // The same record replayed as verifies of the widths the plan may draft at, narrowest first; empty
+    // without a record, and the plan then bounds a verify from the token cycle (draft pricing).
+    std::vector<VerifyCurve> verify_curves;
 
     // What an earlier load of this model measured about its lossless knobs on this machine and this
     // engine (bmoe/measured_knobs.h), the record a front-end kept and probe_and_plan matched by

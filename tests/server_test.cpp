@@ -1823,6 +1823,62 @@ static void model_files_tests() {
         check(projector_for(nameless, {{"/m/mmproj-only.gguf", proj("Whatever")}}) == "/m/mmproj-only.gguf",
               "pairing: a model with no name takes the folder's only projector");
         check(projector_for(nameless, folder).empty(), "pairing: ...but never one of two");
+
+        // The draft model that goes with a model: by the facts the speculative driver checks, never by a
+        // name. The vocabulary (its count and its tokens' hash), the hidden width, and target layers the
+        // model has; exactly one file passing all three.
+        GgufHeaderFacts target = model;
+        target.n_embd = 2048;
+        target.n_vocab = 248320;
+        target.vocab_hash = 0x5eedull;
+        auto drafter = [&](const std::string & name) {
+            GgufHeaderFacts d;
+            d.ok = true;
+            d.arch = "dflash";
+            d.type = "model";
+            d.n_block = 5;
+            d.reads_target = true;
+            d.n_target_layers = 5;
+            d.target_layer_max = 37;
+            d.n_embd = target.n_embd;
+            d.n_vocab = target.n_vocab;
+            d.vocab_hash = target.vocab_hash;
+            d.name = name;
+            return d;
+        };
+        GgufHeaderFacts head = target;
+        head.n_block = 1;
+        head.n_nextn = 1;
+        const CompanionFile real{"/m/qwen-dflash.gguf", drafter("Qwendflash")};
+        check(drafter_for(target, {real}) == real.path,
+              "drafter pairing: a name unlike the model's ('Qwendflash') pairs on the facts");
+        check(drafter_for(target, {{"/m/head.gguf", head}, {"/m/mmproj-qwen.gguf", proj("Qwen3.6-35B-A3B")}, real}) ==
+                  real.path,
+              "drafter pairing: a head file or a projector beside it is no draft model");
+        GgufHeaderFacts other_vocab = drafter("Qwen3.6-35B-A3B-DFlash");
+        other_vocab.vocab_hash = 0xbadull;
+        GgufHeaderFacts other_count = drafter("Qwen3.6-35B-A3B-DFlash");
+        other_count.n_vocab = 151936;
+        GgufHeaderFacts other_width = drafter("Qwen3.6-35B-A3B-DFlash");
+        other_width.n_embd = 4096;
+        GgufHeaderFacts too_deep = drafter("Qwen3.6-35B-A3B-DFlash");
+        too_deep.target_layer_max = target.n_block;
+        check(drafter_for(target, {{"/m/a.gguf", other_vocab}}).empty(),
+              "drafter pairing: another vocabulary, the name matching, is no pairing");
+        check(drafter_for(target, {{"/m/a.gguf", other_count}}).empty(),
+              "drafter pairing: another token count is none");
+        check(drafter_for(target, {{"/m/a.gguf", other_width}}).empty(),
+              "drafter pairing: another hidden width is none");
+        check(drafter_for(target, {{"/m/a.gguf", too_deep}}).empty(),
+              "drafter pairing: a layer read past the model's blocks is none");
+        check(drafter_for(target, {{"/m/a.gguf", other_width}, real}) == real.path,
+              "drafter pairing: the one file that fits among others that do not");
+        check(drafter_for(target, {real, {"/m/b.gguf", drafter("DSpark")}}).empty(),
+              "drafter pairing: two draft models that fit is the person's choice");
+        GgufHeaderFacts no_vocab = target;
+        no_vocab.n_vocab = 0;
+        check(drafter_for(no_vocab, {real}).empty(),
+              "drafter pairing: a model without a vocabulary to check pairs none");
         check(projector_for(model, {{"/m/draft.gguf", other}}).empty(), "pairing: a folder without a projector");
         check(name_key("Qwen3.6-35B-A3B") == "qwen3635ba3b" && name_key("Qwen3.6 35B A3B") == "qwen3635ba3b",
               "pairing: the name key keeps letters and digits only");

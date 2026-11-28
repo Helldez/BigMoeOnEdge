@@ -460,7 +460,7 @@ int main() {
             check(parse_measured_knobs(format_measured_knobs({dh}), dback, err) && dback.size() == 1 &&
                       dback[0].spec_unviable == 1,
                   "record: the draft head's failed open reads back");
-            record_side_rate(drafting, 36.0, dh);
+            record_side_rate(drafting, 36.0, dh, /*drafted*/ true); // the draft's own side, drafting
             KnobTrialConfig plain;
             plain.spec_side = 0;
             record_side_rate(plain, 30.0, dh);
@@ -470,6 +470,26 @@ int main() {
             check(parse_measured_knobs(format_measured_knobs({dh}), dback, err) && dback.size() == 1 &&
                       std::fabs(dback[0].spec_tps - 36.0) < 1e-9 && std::fabs(dback[0].no_spec_tps - 30.0) < 1e-9,
                   "record: the draft head's rates read back as written");
+            // A load that drafts records no other side: its rate counts the accepted drafts.
+            {
+                MeasuredKnobs before;
+                before.device_cache_tps = 40.0;
+                before.wide_decode_tps = 42.0;
+                before.shared_device_tps = 43.0;
+                MeasuredKnobs drafted = before;
+                KnobTrialConfig sides[3];
+                sides[0].device_tier = 0;
+                sides[1].width_side = 0;
+                sides[1].width_narrow = 512;
+                sides[2].shared_device_side = 0;
+                for (const KnobTrialConfig & side : sides)
+                    record_side_rate(side, 151.6, drafted, /*drafted*/ true);
+                check(drafted.device_cache_tps == 40.0 && drafted.no_device_cache_tps == 0.0 &&
+                          drafted.wide_decode_tps == 42.0 && drafted.narrow_decode_tps == 0.0 &&
+                          drafted.shared_device_tps == 43.0 && drafted.no_shared_device_tps == 0.0 &&
+                          drafted.verdicts() == before.verdicts(),
+                      "record: a drafting load leaves the device tier's, width's and shared device's rates");
+            }
             std::vector<MeasuredKnobs> kept = {dback[0]};
             MeasuredKnobs later;
             later.hardware = a.hardware;
@@ -478,6 +498,25 @@ int main() {
             keep_measured_knobs(kept, later);
             check(kept.size() == 1 && kept[0].spec_tps == 36.0 && kept[0].no_spec_tps == 31.0,
                   "record: a later side's rate merges beside the other");
+            // The draft model's side: its own rate and failures, beside the head's.
+            KnobTrialConfig model_draft;
+            model_draft.spec_side = KnobTrialConfig::spec_side_drafter;
+            record_side_unviable(model_draft, kept[0]);
+            check(kept[0].drafter_unviable == 1 && kept[0].spec_unviable == 0,
+                  "record: a draft model's failed open counts on its own side");
+            record_side_rate(model_draft, 112.0, kept[0]);
+            std::vector<MeasuredKnobs> mback;
+            check(parse_measured_knobs(format_measured_knobs({kept[0]}), mback, err) && mback.size() == 1 &&
+                      std::fabs(mback[0].drafter_tps - 112.0) < 1e-9 && mback[0].drafter_unviable == 0 &&
+                      std::fabs(mback[0].spec_tps - 36.0) < 1e-9,
+                  "record: the draft model's rate reads back beside the head's, the failure cleared");
+            record_side_accept(model_draft, 0.65, 5, kept[0]);
+            record_side_accept(plain, 0.9, 3, kept[0]); // a side without a draft keeps no acceptance
+            mback.clear();
+            check(parse_measured_knobs(format_measured_knobs({kept[0]}), mback, err) && mback.size() == 1 &&
+                      std::fabs(mback[0].drafter_accept - 0.65) < 1e-4 && mback[0].drafter_draft == 5 &&
+                      mback[0].spec_draft == 0,
+                  "record: a draft model's acceptance and width read back; a side without a draft keeps none");
         }
         // The shared-memory device's prompt rates, as the load that compared the answers timed them: read
         // back as written, counted, merged beside the decode rates, and absent from an earlier record.

@@ -250,5 +250,32 @@ int main() {
     }
 
     std::printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "OK", failures);
+    // A trace replayed as verifies: every `width` decoded tokens become one step, per layer the union of
+    // what they picked, the prompt's batches left as they were.
+    {
+        RoutingTrace t;
+        t.n_layer = 2;
+        t.n_expert = 8;
+        t.n_expert_used = 2;
+        t.expert_bytes = {100, 100};
+        t.batches = {{0, false, {0, 1, 2}}, {1, false, {3, 4}}, // the prompt
+                     {0, true, {0, 1}},     {1, true, {2, 3}},  // token 1
+                     {0, true, {1, 5}},     {1, true, {3, 4}},  // token 2
+                     {0, true, {6, 7}},     {1, true, {2, 3}}}; // token 3
+        t.prefill_tokens = 4;
+        t.decode_tokens = 3;
+        uint64_t per_step = 0;
+        const RoutingTrace v = verify_trace(t, 2, per_step);
+        check(v.batches.size() == 6 && !v.batches[0].decode && v.batches[2].experts == std::vector<int32_t>{0, 1, 5} &&
+                  v.batches[3].experts == std::vector<int32_t>{2, 3, 4} && v.decode_tokens == 2,
+              "verify trace: two tokens are one step, per layer the union of their experts");
+        check(per_step == (uint64_t) ((3 + 3 + 2 + 2) * 100 / 2),
+              "verify trace: the bytes a step routes through, on average", std::to_string(per_step));
+        uint64_t one = 0;
+        const RoutingTrace same = verify_trace(t, 1, one);
+        check(same.batches.size() == t.batches.size() && one == 400, "verify trace: a width of one is the trace itself",
+              std::to_string(one));
+    }
+
     return failures ? 1 : 0;
 }

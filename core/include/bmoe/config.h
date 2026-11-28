@@ -241,9 +241,9 @@ struct MoeStreamConfig {
     int routing_record_tokens = 256;
     // Record the routing on a run that does not stream as well. With no streamer the routing nodes
     // are not otherwise observed, so recording them costs one barrier per MoE layer per token until
-    // the record is full, and nothing after. The planner sets it where a choice it has to make is
-    // priced by that record and none exists yet (the device tier); off, an unstreamed run records
-    // nothing, as before.
+    // the record is full, and nothing after. The planner sets it where the run does not stream, the
+    // front-end keeps records and the model has none of its own yet (choose_record_unstreamed): the
+    // record prices the cache and a draft's verify; off, an unstreamed run records nothing.
     bool record_unstreamed = false;
 
     // How the dense (non-expert) weights are treated. The streamer only rebinds experts; the rest —
@@ -460,12 +460,13 @@ struct MoeStreamConfig {
     static constexpr int device_cache_read_ahead_max = 64; // a layer's worth of experts on the widest routers measured
 };
 
-// Where the draft tokens of a self-speculative step come from. The verify half of the loop is
-// identical for both sources; only the producer differs, and with it what a draft costs.
+// Where the draft tokens of a speculative step come from. The verify half of the loop is identical
+// for every source; only the producer differs, and with it what a draft costs.
 enum class DraftSource {
-    none,  // no speculation: one token per decode
-    mtp,   // the model's own trained multi-token-prediction head (needs the nextn block)
-    ngram, // prompt-lookup over prompt + generated tokens (needs nothing from the model)
+    none,    // no speculation: one token per decode
+    mtp,     // the model's own trained multi-token-prediction head (needs the nextn block)
+    ngram,   // prompt-lookup over prompt + generated tokens (needs nothing from the model)
+    drafter, // a draft model trained for this one, in a file of its own (SpecConfig::drafter_file)
 };
 
 // Self-speculative decoding: draft draft_max continuation tokens, then verify all of them in ONE
@@ -502,17 +503,33 @@ struct SpecConfig {
     // with 8 slow cores, drafting on the host cost 35 ms of a 65 ms token and lost to no head at all.
     bool mtp_head_on_devices = false;
 
+    // Drafter only. A GGUF holding a draft model trained for this one: a small network that reads the
+    // target's hidden states and proposes the next tokens (a block-diffusion drafter proposes a whole
+    // block in one pass). What kind of drafter it is - and so which graph drafts and how it is driven -
+    // is read from the file's header by llama.cpp's speculative driver; nothing here names one. A file
+    // that turns out to hold an MTP head is driven as one, the same as {mtp-head}.
+    std::string drafter_file;
+    // Drafter only: the drafter's weights on the devices the target's layers are on (true) or on the
+    // host (false). The same decision as mtp_head_on_devices, taken by the same planner rule.
+    bool drafter_on_devices = false;
+
+    // MTP head file or drafter, on the devices: the one device that computes the draft, by its
+    // backend name. Empty leaves it to llama.cpp, which spreads it over the devices the target uses by
+    // their free memory. The planner names the device that computes dense weights fastest where there
+    // are several, since a draft runs every verify step and a slower card or a split costs each one.
+    std::string draft_device;
+
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.
     // Past the source's acceptance horizon the extra drafts are rejected and paid for anyway, which
     // is why the useful range is small; 3 is upstream's default for a single trained head.
     int draft_max = 3;
-    // The narrowest ubatch an MTP draft context is reserved at: it computes 1 + draft_max positions
+    // The narrowest ubatch a draft context is reserved at: it computes 1 + draft_max positions
     // at decode, a prompt chunk in pieces this wide at prefill (Session::open, and the placement
     // probe that fits it beside the target).
-    static constexpr int mtp_draft_ubatch = 32;
+    static constexpr int draft_context_ubatch = 32;
 
-    // MTP only. Confidence floor for continuing to draft, as the head's own probability for the
+    // MTP and drafter. Confidence floor for continuing to draft, as the head's own probability for the
     // token it is proposing. At 0 the head is asked for draft_max tokens unconditionally, however
     // unsure it is; above 0 it stops as soon as its best candidate falls below this, making the
     // draft width adaptive per step at no cost.
@@ -544,8 +561,33 @@ struct SpecConfig {
     static constexpr float draft_p_min_max = 1.0f; // a probability: only drafts the head is sure of
 
     bool enabled() const { return source != DraftSource::none; }
+    // As a run reports it (RunInfo::spec, the CLI's summary lines): the choice's own value.
+    const char * source_name() const {
+        switch (source) {
+        case DraftSource::mtp:
+            return "mtp";
+        case DraftSource::ngram:
+            return "ngram";
+        case DraftSource::drafter:
+            return "drafter";
+        case DraftSource::none:
+            break;
+        }
+        return "off";
+    }
     bool is_mtp() const { return source == DraftSource::mtp; }
     bool is_ngram() const { return source == DraftSource::ngram; }
+    bool is_drafter() const { return source == DraftSource::drafter; }
+    // The draft is produced by weights, in a context of its own that llama.cpp's speculative driver
+    // runs beside the target: the model's head or a drafter. The n-gram source needs neither.
+    bool uses_driver() const { return is_mtp() || is_drafter(); }
+    // The file the draft weights are loaded from when they are not the model file's own: the head
+    // file or the drafter. Empty for a head inside the model, and for a source that has no weights.
+    const std::string & draft_file() const { return is_drafter() ? drafter_file : mtp_head; }
+    bool has_draft_file() const { return uses_driver() && !draft_file().empty(); }
+    bool draft_file_on_devices() const { return is_drafter() ? drafter_on_devices : mtp_head_on_devices; }
+    // The model's own head, read from the model file: the one draft source the streamer serves.
+    bool head_in_model() const { return is_mtp() && mtp_head.empty(); }
 };
 
 // Prefill on an accelerator, decode on the CPU. Off unless `device` names a ggml device.
@@ -744,11 +786,14 @@ struct KnobTrialConfig {
     // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
     // model is fixed when it is loaded, so a side is timed by a load that serves it.
     int shared_device_side = -1;
-    // Whether a model held whole drafts with its own MTP block, decided across loads
-    // (MeasuredKnobs::spec_tps): 1 times the decode with the head drafting (SpecConfig armed), 0
-    // without; -1 neither. The draft context is created with the target's, so a side is timed by a
-    // load that serves it.
+    // Whether the model drafts, and with which draft, decided across loads (MeasuredKnobs::spec_tps,
+    // drafter_tps, no_spec_tps): spec_side_head times the decode with the model's own head drafting
+    // (spec=mtp), spec_side_drafter with the draft model paired with it (spec=drafter), 0 without a
+    // draft; -1 none. The draft context is created with the target's, so a side is timed by a load
+    // that serves it.
     int spec_side = -1;
+    static constexpr int spec_side_head = 1;
+    static constexpr int spec_side_drafter = 2;
     // The device whose answers for this model the load compares with the cores' before it serves
     // (ggml's name for it, the key the verdict is kept under: MeasuredKnobs::device_answers); empty,
     // nothing is compared. A plan that moves a whole model onto a device by its own choice asks for

@@ -65,7 +65,8 @@ constexpr UnviableSide k_unviable_sides[] = {{"device_cache", &MeasuredKnobs::de
                                              {"shared_device", &MeasuredKnobs::shared_device_unviable},
                                              {"no_shared_device", &MeasuredKnobs::no_shared_device_unviable},
                                              {"spec", &MeasuredKnobs::spec_unviable},
-                                             {"no_spec", &MeasuredKnobs::no_spec_unviable}};
+                                             {"no_spec", &MeasuredKnobs::no_spec_unviable},
+                                             {"drafter", &MeasuredKnobs::drafter_unviable}};
 
 // `name:count` (or `name`, one) per side, comma-separated. A name this engine does not know is a
 // later engine's side: read past, as an unknown key is.
@@ -197,11 +198,19 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             out += std::string(" no_shared_device_prompt_tps=") + num;
         }
         // The model's own draft head: later keys still, written once a side is measured.
-        if (r.spec_tps > 0.0 || r.no_spec_tps > 0.0) {
+        if (r.spec_tps > 0.0 || r.no_spec_tps > 0.0 || r.drafter_tps > 0.0) {
             std::snprintf(num, sizeof(num), "%.3f", r.spec_tps);
             out += std::string(" spec_tps=") + num;
             std::snprintf(num, sizeof(num), "%.3f", r.no_spec_tps);
             out += std::string(" no_spec_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.3f", r.drafter_tps);
+            out += std::string(" drafter_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.4f", r.spec_accept);
+            out += std::string(" spec_accept=") + num;
+            out += " spec_draft=" + std::to_string(r.spec_draft);
+            std::snprintf(num, sizeof(num), "%.4f", r.drafter_accept);
+            out += std::string(" drafter_accept=") + num;
+            out += " drafter_draft=" + std::to_string(r.drafter_draft);
         }
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
@@ -320,6 +329,16 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.spec_tps);
             else if (k == "no_spec_tps")
                 ok = as_double(r.no_spec_tps);
+            else if (k == "drafter_tps")
+                ok = as_double(r.drafter_tps);
+            else if (k == "spec_accept")
+                ok = as_double(r.spec_accept);
+            else if (k == "drafter_accept")
+                ok = as_double(r.drafter_accept);
+            else if (k == "spec_draft")
+                ok = as_int(r.spec_draft);
+            else if (k == "drafter_draft")
+                ok = as_int(r.drafter_draft);
             else if (k == "shared_device_prompt_tps")
                 ok = as_double(r.shared_device_prompt_tps);
             else if (k == "no_shared_device_prompt_tps")
@@ -389,7 +408,11 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 || r.mix_requests < 0 ||
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
             !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
-            !(r.no_shared_device_prompt_tps >= 0.0) || !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0)) {
+            !(r.no_shared_device_prompt_tps >= 0.0) || !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) ||
+            !(r.drafter_tps >= 0.0) || !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) ||
+            !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) || r.spec_draft < 0 ||
+            r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
+            r.drafter_draft > SpecConfig::draft_max_limit) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -441,6 +464,16 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             merge_unviable(r.no_spec_unviable, rec.no_spec_unviable, r.no_spec_tps, rec.no_spec_tps);
             if (rec.spec_tps > 0.0) r.spec_tps = rec.spec_tps;
             if (rec.no_spec_tps > 0.0) r.no_spec_tps = rec.no_spec_tps;
+            merge_unviable(r.drafter_unviable, rec.drafter_unviable, r.drafter_tps, rec.drafter_tps);
+            if (rec.drafter_tps > 0.0) r.drafter_tps = rec.drafter_tps;
+            if (rec.spec_draft > 0) {
+                r.spec_accept = rec.spec_accept;
+                r.spec_draft = rec.spec_draft;
+            }
+            if (rec.drafter_draft > 0) {
+                r.drafter_accept = rec.drafter_accept;
+                r.drafter_draft = rec.drafter_draft;
+            }
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -498,8 +531,24 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
     records.push_back(rec);
 }
 
-void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec) {
+namespace {
+// A draft side's rate and failure count (KnobTrialConfig::spec_side): the head's, the draft model's,
+// or the decode's without a draft.
+double * spec_rate(int side, MeasuredKnobs & rec) {
+    if (side == KnobTrialConfig::spec_side_head) return &rec.spec_tps;
+    if (side == KnobTrialConfig::spec_side_drafter) return &rec.drafter_tps;
+    return &rec.no_spec_tps;
+}
+int * spec_unviable(int side, MeasuredKnobs & rec) {
+    if (side == KnobTrialConfig::spec_side_head) return &rec.spec_unviable;
+    if (side == KnobTrialConfig::spec_side_drafter) return &rec.drafter_unviable;
+    return &rec.no_spec_unviable;
+}
+} // namespace
+
+void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec, bool drafted) {
     if (!(tokens_per_second > 0.0)) return;
+    if (drafted && trial.spec_side < 0) return;
     if (trial.device_tier >= 0) {
         (trial.device_tier == 1 ? rec.device_cache_tps : rec.no_device_cache_tps) = tokens_per_second;
         (trial.device_tier == 1 ? rec.device_cache_unviable : rec.no_device_cache_unviable) = 0;
@@ -512,8 +561,19 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
         (trial.shared_device_side == 1 ? rec.shared_device_unviable : rec.no_shared_device_unviable) = 0;
         if (trial.shared_device_side == 1) rec.shared_device_unviable_free_mib = 0;
     } else if (trial.spec_side >= 0) {
-        (trial.spec_side == 1 ? rec.spec_tps : rec.no_spec_tps) = tokens_per_second;
-        (trial.spec_side == 1 ? rec.spec_unviable : rec.no_spec_unviable) = 0;
+        *spec_rate(trial.spec_side, rec) = tokens_per_second;
+        *spec_unviable(trial.spec_side, rec) = 0;
+    }
+}
+
+void record_side_accept(const KnobTrialConfig & trial, double accepted_share, int draft, MeasuredKnobs & rec) {
+    if (draft <= 0 || !(accepted_share >= 0.0 && accepted_share <= 1.0)) return;
+    if (trial.spec_side == KnobTrialConfig::spec_side_head) {
+        rec.spec_accept = accepted_share;
+        rec.spec_draft = draft;
+    } else if (trial.spec_side == KnobTrialConfig::spec_side_drafter) {
+        rec.drafter_accept = accepted_share;
+        rec.drafter_draft = draft;
     }
 }
 
@@ -523,7 +583,7 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
     if (trial.width_side >= 0) return trial.width_side == 1 ? &rec.wide_unviable : &rec.narrow_unviable;
     if (trial.shared_device_side >= 0)
         return trial.shared_device_side == 1 ? &rec.shared_device_unviable : &rec.no_shared_device_unviable;
-    if (trial.spec_side >= 0) return trial.spec_side == 1 ? &rec.spec_unviable : &rec.no_spec_unviable;
+    if (trial.spec_side >= 0) return spec_unviable(trial.spec_side, rec);
     return nullptr;
 }
 

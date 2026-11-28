@@ -12,6 +12,7 @@
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
+#include "../engine/draft_driver.h"
 #include "../engine/kv_cache_type.h"
 #include "../moe/tensor_names.h"
 
@@ -21,6 +22,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -148,41 +150,62 @@ Placement probe_placement(const char * model_path,
     // Any speculation keeps rollback snapshots of the recurrent state, one per drafted position, in
     // the target's own context (Session::open).
     if (spec && spec->enabled()) cparams.n_rs_seq = (uint32_t) spec->draft_max;
-    // The MTP draft context, opened as the session opens it: its head is the target's own block
-    // (weights already counted, the target loaded with it) or a file of its own on the host, and
-    // either way its state and compute buffers land on the devices beside the target's.
-    const bool mtp = spec && spec->is_mtp();
-    const bool own_head = mtp && !spec->mtp_head.empty();
-    mparams.load_mtp = mtp && !own_head;
+    // The draft context, opened as the session opens it (engine/draft_driver.h): the model's own
+    // head (weights already counted, the target loaded with it) or a draft file on the host or the
+    // devices, and either way its state and compute buffers land on the devices beside the target's.
+    const bool drafts = spec && spec->uses_driver();
+    const detail::DraftKind kind = spec ? detail::draft_kind(*spec) : detail::DraftKind{};
+    const bool own_file = drafts && spec->has_draft_file();
+    mparams.load_mtp = spec && spec->head_in_model();
     llama_model_params dmparams = llama_model_default_params();
+    std::vector<ggml_backend_dev_t> draft_devices; // the one device a draft is named onto, if any
     llama_context_params dcparams = cparams;
     common_fit_extra_model draft{};
-    if (mtp) {
-        dmparams.load_mtp = true;
-        if (own_head) dmparams.n_gpu_layers = spec->mtp_head_on_devices ? llama_model_default_params().n_gpu_layers : 0;
-        dcparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
-        dcparams.moe_cache_size = 0;
-        dcparams.n_rs_seq = 0;
-        dcparams.n_outputs_max = 0;
-        dcparams.n_ubatch = std::min<uint32_t>(cparams.n_ubatch,
-                                               (uint32_t) std::max(spec->draft_max + 1, SpecConfig::mtp_draft_ubatch));
-        draft.paths_model = {own_head ? spec->mtp_head : std::string(model_path)};
+    // A draft file the driver has no draft for is the session's error to report (Session::open).
+    const bool fit_draft = drafts && kind.known();
+    if (fit_draft) {
+        dmparams = detail::draft_file_model_params(kind, *spec, mparams.devices, draft_devices);
+        // A head inside the model is the target's own load, on the target's placement.
+        if (!own_file) dmparams.n_gpu_layers = llama_model_default_params().n_gpu_layers;
+        dcparams = detail::draft_context_params(kind, *spec, cparams);
+        draft.paths_model = {own_file ? spec->draft_file() : std::string(model_path)};
         draft.mparams = &dmparams;
         draft.cparams = &dcparams;
-        draft.shares_model = !own_head;
+        draft.shares_model = !own_file;
+    }
+    // A draft file the fitter cannot measure is fitted without, and the placement says so: the fitter
+    // catches its own failure to measure the extra model and goes on with the main one alone, reporting
+    // success, so a placement taken as "fitted with the draft" left no room for it. A DFlash drafter is
+    // one (its context needs the target's, ctx_other, which a no_alloc measurement does not have): on a
+    // 32 GB card the fitter gave 28.9 GB to the model's layers and the drafter on the card then ran out
+    // of memory. So the file is measured first, the way the fitter would (no_alloc, the same
+    // parameters), and a measurement that fails leaves it out; the plan then charges it whole from its
+    // own file and header (draft_device_bytes). The model's own head is the target's load and is not
+    // measured apart.
+    bool with_draft = fit_draft;
+    if (fit_draft && own_file) {
+        dcparams.n_ctx = cparams.n_ctx;
+        try {
+            (void) common_fit_measure(draft.paths_model, &dmparams, &dcparams, nullptr, nullptr, GGML_LOG_LEVEL_WARN);
+        } catch (const std::exception &) {
+            with_draft = false;
+        }
     }
 
     const common_params_fit_status st =
         common_fit_params(model_paths, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
-                          fitter_n_ctx_min, mtp ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
+                          fitter_n_ctx_min, with_draft ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
         return pl;
     }
     pl.fitted = true;
+    pl.fitted_with_draft = with_draft;
     pl.outcome = st == COMMON_PARAMS_FIT_STATUS_SUCCESS
                      ? "the capacity fitter found a placement that is projected to fit"
                      : "the capacity fitter could not make the model fit the devices";
+    if (fit_draft && !with_draft)
+        pl.outcome += ", without the draft file, which it could not measure (the plan charges it from its file)";
     pl.n_ctx = cparams.n_ctx;
 
     // With no device at all, "layers on devices" means nothing: the fitter leaves n_gpu_layers at
