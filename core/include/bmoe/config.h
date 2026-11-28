@@ -118,9 +118,10 @@ struct MoeStreamConfig {
     // (docs/hardware-planning.md). Needs device_cache_mb.
     float device_cache_cpu_share = 0.0f;
     // How that cache's misses reach it, all lossless (the gates compare each with the plain upload):
-    // - fill lanes: where the host writes the device's memory in place (unified memory; ggml's
-    //   get_host_base), the misses are read from the file straight into the cache's slots by this many
-    //   reader lanes, instead of copied from the mapping. 0 copies from the mapping.
+    // - fill lanes: where the host writes the device's memory in place (unified memory: the backend
+    //   exports ggml_backend_buffer_get_host_base), the misses are read from the file straight into
+    //   the cache's slots by this many reader lanes, instead of copied from the mapping. 0 copies
+    //   from the mapping.
     int device_cache_fill_lanes = 0;
     // - host call: the slot lookup runs inside the graph where the device can wait for the host
     //   (GGML_OP_HOST_CALL), so a token is one graph instead of a split per layer. Whether one graph

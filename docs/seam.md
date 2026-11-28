@@ -144,24 +144,29 @@ refill a weight buffer between graphs, this commit is dropped at the next bump.
 ## 3c. Device expert cache levers (experimental fork branch)
 
 An experimental branch of the fork, `bmoe/moe-cache-exp-2611` of `Helldez/llama.cpp` (and `bmoe/lossless-cache-2811`
-on top of it, for the cache lent to a prompt and the read-ahead of verify batches), adds one commit
+on top of it, for the cache lent to a prompt and the read-ahead of verify batches, and
+`bmoe/footprint-cut-2811` on that, which moves the host-writable memory out of ggml's interfaces), adds one commit
 on top of the pinned branch (hook + Hexagon fix). It is not proposed upstream and it touches
 llama.cpp more than this project's rule allows (hard rule 1 asks for a single small commit); it lives
 on its own branch so the default pin can return to the hook branch unchanged.
 
-- **Host-writable device memory** (`ggml_backend_buffer_i::get_host_base`,
-  `ggml_backend_buffer_get_host_base`, `ggml_backend_tensor_host_ptr`): the host address of device
-  memory the host may store to in place, declared by each backend where the device works on the
-  host's own memory (Metal shared buffers, Vulkan host-coherent memory on integrated GPUs, CUDA
-  managed memory on integrated devices, host buffers). The MoE cache writes its slots, slot maps and
-  read-ahead with stores there, and names no backend.
+- **Host-writable device memory**: a backend whose device works on the host's own memory exports
+  `ggml_backend_buffer_get_host_base` through its registry's public `ggml_backend_reg_get_proc_address`
+  (Metal shared buffers, Vulkan host-coherent memory on integrated GPUs, CUDA managed memory on
+  integrated devices); no ggml interface or header changes. llama.cpp asks each cache device's registry for
+  that function once, when the MoE cache is built (`llama_moe_cache::host_ptr`), takes host
+  buffers as they are, and uploads wherever the answer is none. The MoE cache writes its slots, slot
+  maps and read-ahead with stores there, and names no backend. (`ggml_backend_dev_buffer_from_host_ptr`
+  would not do: it covers only memory llama.cpp allocates itself, not the scheduler's compute buffers a
+  lent cache, a wide pass's expert copies and the lookup's results live in, and among the device
+  backends only Metal reports it.)
 - **`GGML_OP_HOST_CALL`**: a host function answered inside a graph (CPU inline, CUDA through a
   mapped mailbox inside a captured graph, Metal through a shared event between graph segments).
   The MoE cache's lookup can run as one, so a token is one graph instead of a split per layer.
 - **MoE cache**: `llama_set_moe_cache_fill` (misses written in place by a caller), and
   `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`
-  (filled ahead only where the host writes the cache in place; predicted for every batch the cache
-  serves), `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the
+  (for every batch the cache serves, predicted and filled ahead only where the host writes the cache in
+  place: elsewhere no prediction is built), `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the
   background) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch; where the
   host does not write that memory in place the misses are uploaded into it on the backend's queue).
 - **Compute buffer room for a lent cache**: `ggml_gallocr_set_min_buffer_size` /

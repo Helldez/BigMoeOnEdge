@@ -88,6 +88,12 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
 
 ### Changed
+- **Smaller llama.cpp footprint for the device cache, the same behaviour.** The host address of device memory
+  the host writes in place is now a function a backend exports through its registry
+  (`ggml_backend_reg_get_proc_address`), not a new member of every ggml buffer interface: ggml's core headers
+  and the backends that have no such memory are untouched. The read-ahead builds no prediction where it fills
+  nothing ahead (a card with memory of its own), instead of paying the next router's product per layer for
+  statistics. The cache's lend flag for llama.cpp's own tools is gone (bmoe sets it directly).
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.
