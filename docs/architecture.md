@@ -277,6 +277,10 @@ The composition root is `Session` (core/src/engine/session.cpp):
    weights, source init, release-mmap, traces), `open_prefill_device`, `arm_decode_traces`,
    `describe_run`, `warn_about_load` — each a method of the session's `Impl` that fails through
    one `Opening` context, so the order is visible in one screen and every early return is kept.
+   `SessionConfig::stop` cancels weight loading through llama.cpp's public progress callback and
+   is checked between opening stages. `engine/opening_stop.h` makes every placement, including
+   a native fallback, borrow the same flag and discard a late success; it is tested without a model.
+   In-flight driver calls, warm-ups and dense copies may finish before the next cooperative check.
 2. `generate()` — prefill the prompt, then greedily decode `n_predict` tokens, reporting
    per-token metrics. Callable repeatedly; the expert cache stays warm between calls (see
    [session.md](session.md)). Cancellable mid-flight via the abort callback. One call is a

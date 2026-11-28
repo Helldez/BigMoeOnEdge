@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.50.2] - 2026-11-28
+
+### Fixed
+- **Cancel and unload reach model loading and planning, not only generation (#746).** A load
+  borrows a stop flag through llama.cpp's public progress callback, including native placement
+  fallbacks and a separate MTP head. Opening also checks between its stages. Planning checks
+  between measurement stages; an in-flight probe or driver call must finish before that boundary.
+  A stopped load drops even a session that finished opening and leaves `state: empty`, without
+  a model error to clear. A cancelled auto-plan is not applied and cannot start a delayed load.
+  Each admitted measurement/load keeps its own stop state through the handoff, so a cancellation
+  after `loading` is announced cannot be reset, and the next measurement or load starts clean.
+  A cancelled fallback cannot commit its settings or device-failure record. Cancellation and
+  result acceptance are ordered: results already accepted before cancel are not rolled back.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

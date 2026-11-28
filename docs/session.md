@@ -134,6 +134,16 @@ where the vocabulary does not stop on it.
 
 ## Cancel
 
+`SessionConfig::stop` optionally borrows a caller-owned `std::atomic<bool>` until `open()` returns.
+Every placement attempt, including an explicit fallback, uses the outer open's flag; a cancelled
+placement is not retried or recorded as a device failure. Model weight loading (including a separate
+MTP head and the answer-check reference) reads it through llama.cpp's public progress callback.
+Opening also checks between its stages and drops an attempt that succeeded after cancellation.
+It returns no session and sets `error` to "the load was stopped". In-flight metadata reads, context
+creation, driver calls, warm-ups and weight-copy stages can finish before the next boundary; this
+is cooperative cancellation, not a guarantee of immediate return. The flag is not used by later
+generation. The fallback/late-success policy is covered without a model by `tests/opening_stop_test.cpp`.
+
 `Session::cancel()` is thread-safe and interrupts an in-flight `generate()` at the next decode
 boundary via llama's abort callback (installed unconditionally at open, so it works in serial and
 overlap alike). It leaves the model and cache intact; the returned `RunResult` has `cancelled =

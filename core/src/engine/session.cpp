@@ -25,6 +25,7 @@
 #include "cache_brake.h"
 #include "context_checkpoints.h"
 #include "context_fallback.h"
+#include "opening_stop.h"
 #include "kv_cache_type.h"
 #include "media_input.h"
 #include "prompt_stream.h"
@@ -976,6 +977,8 @@ void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
 
+using detail::opening_stopped;
+
 // What open()'s steps hand one another: the request, the facts settled so far, and the caller's
 // error out-parameter. A step that fails sets the error through fail() and returns false, and
 // open() stops there, so a step never runs after one that failed — the same early returns the
@@ -1011,6 +1014,7 @@ struct Session::Impl::Opening {
         error = std::move(msg);
         return false;
     }
+    bool stopped() { return opening_stopped(cfg, error); }
 };
 
 // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
@@ -1038,6 +1042,8 @@ struct Session::Impl::Opening {
 // by the same rules as the model it stands beside.
 bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     const SessionConfig & cfg = o.cfg;
+    // dt:open.load.admit
+    if (o.stopped()) return false;
     llama_model_params mparams = llama_model_default_params();
     // A device we are not using should not be in the room. Left registered, the scheduler hands it
     // every node it can execute - the weightless ones especially - purely because it is there, and
@@ -1180,8 +1186,28 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
         mparams.kv_overrides = kv_overrides;
     }
 
+    // dt:open.load.stop
+    // A load a person stopped: llama.cpp asks progress_callback as it reads the file in, and a false
+    // answer ends the open there instead of reading gigabytes nobody wants any more. The flag is the
+    // caller's (EngineHost raises it on cancel and unload), borrowed for the call. A lambda with no
+    // capture is a function pointer, so the boundary stays llama.cpp's public one.
+    if (cfg.stop) {
+        mparams.progress_callback = [](float, void * user) -> bool {
+            return !static_cast<const std::atomic<bool> *>(user)->load(std::memory_order_relaxed);
+        };
+        mparams.progress_callback_user_data = const_cast<std::atomic<bool> *>(cfg.stop);
+    }
     llama_model * m = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
-    if (!m) return o.fail("could not load the model: " + cfg.model_path);
+    // dt:open.load.failed
+    if (!m) {
+        if (o.stopped()) return false;
+        return o.fail("could not load the model: " + cfg.model_path);
+    }
+    // dt:open.load.completed
+    if (o.stopped()) {
+        llama_model_free(m);
+        return false;
+    }
     if (reference) {
         *reference = m;
         return true;
@@ -1196,11 +1222,17 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
         hp.n_gpu_layers = cfg.spec.mtp_head_on_devices ? llama_model_default_params().n_gpu_layers : 0;
         hp.devices = mparams.devices; // the same list, so the head cannot land on a device the plan left out
         hp.load_mtp = true;
+        hp.progress_callback = mparams.progress_callback;
+        hp.progress_callback_user_data = mparams.progress_callback_user_data;
         llama_model * h = llama_model_load_from_file(cfg.spec.mtp_head.c_str(), hp);
-        if (!h) return o.fail("could not load {mtp-head}: " + cfg.spec.mtp_head);
+        // dt:open.load.mtp-head.failed
+        if (!h) {
+            if (o.stopped()) return false;
+            return o.fail("could not load {mtp-head}: " + cfg.spec.mtp_head);
+        }
         model_dft.reset(h);
     }
-    return true;
+    return !o.stopped();
 }
 
 // The model's answers on the devices its layers were opened on, against the same file on the cores
@@ -2879,7 +2911,16 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const std::string & device = cfg.trial.answer_device;
     const auto t0 = clock_t_::now();
     AnswerCheck check;
-    std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
+    // Every placement attempt borrows the outer call's stop flag, even an explicit fallback that
+    // was constructed before the caller supplied it. The lambda owns no stop state beyond open().
+    const auto place = [&](const SessionConfig & attempt, AnswerCheck * answer) {
+        return detail::open_attempt(cfg, attempt, error, [&](const SessionConfig & c) {
+            return open_placed(c, error, route_trace, compute_trace, io_trace, answer);
+        });
+    };
+    std::unique_ptr<Session> self = place(cfg, &check);
+    // dt:open.entry.stopped
+    if (opening_stopped(cfg, error)) return nullptr;
     // dt:open.entry
     if (!check.ran) {
         // A plan that moved the model onto a device gives the configuration its other part
@@ -2900,7 +2941,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                    placed_on.c_str(), error.c_str(), (unsigned long long) free_mib);
         const double first_s = secs(t0, clock_t_::now());
         const std::string first_error = error;
-        self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
+        self = place(*cfg.fallback, nullptr);
+        // dt:open.unopened.stopped
+        if (opening_stopped(cfg, error)) return nullptr;
         if (!self) {
             error = "the model could not be opened on " + placed_on + " (" + first_error +
                     "), nor as the plan's other configuration: " + error;
@@ -2929,8 +2972,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // The plan's own other part where it has one (SessionConfig::fallback), else this same
     // configuration on the cores.
     // dt:open.reopen
-    self = open_placed(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), error, route_trace, compute_trace,
-                       io_trace, nullptr);
+    self = place(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), nullptr);
+    // dt:open.reopen.stopped
+    if (opening_stopped(cfg, error)) return nullptr;
     if (!self) {
         error = "the model was not kept on " + device +
                 (check.cores_faster                         ? ", which the CPU decodes it faster than"
@@ -2960,6 +3004,8 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
                                               IComputeTraceSink * compute_trace,
                                               IIoTraceSink * io_trace,
                                               AnswerCheck * check) {
+    // dt:open.placed.admit
+    if (opening_stopped(cfg, error)) return nullptr;
     // Create the session first so its Impl destructor owns backend teardown from this point
     // on: any failure below returns nullptr, destroying `self`, which frees the backend once.
     std::unique_ptr<Session> self(new Session());
@@ -2978,15 +3024,18 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     Impl::Opening o{cfg, error, route_trace, compute_trace, io_trace};
 
     // The order is load-bearing; each step's comment says what it needs from the ones before.
-    if (!im.load_model(o)) return nullptr;
+    // dt:open.steps
+    if (o.stopped() || !im.load_model(o)) return nullptr;
     detail::log_memory_snapshot("model-loaded");
-    if (!im.read_model(o)) return nullptr;
-    if (!im.build_hook(o)) return nullptr;
-    if (!im.create_contexts(o)) return nullptr;
+    if (o.stopped() || !im.read_model(o)) return nullptr;
+    if (o.stopped() || !im.build_hook(o)) return nullptr;
+    if (o.stopped() || !im.create_contexts(o)) return nullptr;
+    if (o.stopped()) return nullptr;
     // dt:open.answer-check
     if (check && !cfg.trial.answer_device.empty()) {
         check->ran = true;
         check->result = im.compare_device_answer(o);
+        if (o.stopped()) return nullptr;
         if (check->result.verdict != detail::DeviceAnswer::Verdict::Confirmed) {
             error = "the device's answers for this model were not confirmed";
             return nullptr;
@@ -3000,16 +3049,22 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     }
     im.build_sampler(cfg);
     im.install_abort_callback();
-    if (!im.init_speculation(o)) return nullptr;
+    // dt:open.steps.spec
+    if (o.stopped() || !im.init_speculation(o)) return nullptr;
     // dt:open.stream
-    if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
+    if (cfg.moe.enabled && (o.stopped() || !im.bind_streaming(o))) return nullptr;
     // dt:open.unstreamed-record
-    if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
+    if (records_unstreamed(cfg) && (o.stopped() || !im.arm_unstreamed_record(o))) return nullptr;
     // dt:open.host-buffer
-    if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
-    if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
-    if (im.prefill && !im.open_prefill_device(o)) return nullptr;
-    if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
+    if (!cfg.moe.expert_host_buffer.empty() && (o.stopped() || !im.stage_experts_in_host_buffer(o))) return nullptr;
+    // dt:open.steps.device-cache
+    if (cfg.moe.device_cache_mb > 0 && (o.stopped() || !im.arm_device_cache(o))) return nullptr;
+    // dt:open.steps.prefill
+    if (im.prefill && (o.stopped() || !im.open_prefill_device(o))) return nullptr;
+    // dt:open.steps.prefill-check
+    if (im.prefill && cfg.prefill.verify && (o.stopped() || !im.confirm_prefill_device(o))) return nullptr;
+    // dt:open.steps.ready
+    if (o.stopped()) return nullptr;
     im.arm_decode_traces(o);
     im.arm_trials();
     // What came of the prefill device asked for, for the record of this model (MeasuredKnobs::prefill):

@@ -35,7 +35,8 @@ PlanOutcome make_plan(const RunConfig & cfg,
                       const PlanStepFn & on_step,
                       const RoutingTrace * routing,
                       const std::vector<MeasuredKnobs> * knobs,
-                      bool measure_knobs) {
+                      bool measure_knobs,
+                      const std::atomic<bool> * stop) {
     PlanOutcome o;
     if (cfg.model_path.empty()) {
         o.error = "choose a model first: a plan is for one model on this machine";
@@ -55,6 +56,9 @@ PlanOutcome make_plan(const RunConfig & cfg,
     opt.probe_mem = false;
     opt.routing = routing;
     opt.knobs = knobs;
+    // A person who cancels or unloads during the measuring: probe_and_plan reads it between stages
+    // and returns a plan that declined, saying so (#746).
+    opt.stop = stop;
     if (isolated_probes) {
         const std::string model = cfg.model_path;
         opt.isolated_probe_args = [model](const std::string & dev) {
@@ -67,6 +71,12 @@ PlanOutcome make_plan(const RunConfig & cfg,
         };
     auto basis = std::make_shared<PlanBasis>();
     basis->facts = probe_and_plan(cfg, req, opt);
+    // dt:srv.plan.stopped
+    if (stop && stop->load(std::memory_order_relaxed)) {
+        o.error = "the measurement was stopped";
+        o.body = json{{"available", true}, {"cancelled", true}, {"declined", true}, {"decline_reason", o.error}};
+        return o;
+    }
     basis->cfg = cfg;
     basis->req = req;
     o = outcome_of(*basis);

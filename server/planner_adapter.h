@@ -86,7 +86,8 @@ PlanOutcome make_plan(const RunConfig & cfg,
                       const PlanStepFn & on_step = nullptr,
                       const RoutingTrace * routing = nullptr,
                       const std::vector<MeasuredKnobs> * knobs = nullptr,
-                      bool measure_knobs = false);
+                      bool measure_knobs = false,
+                      const std::atomic<bool> * stop = nullptr);
 
 // The child's side of an isolated probe: probe `device` for `model_path`, print its facts after
 // the marker, and return the process's exit code. 3 when there is no such device or no planner.

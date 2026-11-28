@@ -21,6 +21,7 @@
 #include "bmoe/plan.h"
 #include "bmoe/routing.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -58,6 +59,11 @@ struct AutoPlanOptions {
     // the number of stages, so a front-end can say which probe is running instead of a blind wait.
     // Called on the planning thread; empty, nothing is reported.
     std::function<void(const char * step, int index, int count)> on_step;
+
+    // Optional caller-owned flag, borrowed until probe_and_plan returns. Checked before stages and
+    // after the rules; an in-flight probe finishes before that boundary. A stopped measurement
+    // returns a declined plan with the request unchanged, and must not continue an auto-load.
+    const std::atomic<bool> * stop = nullptr;
 
     // The routing this model recorded on an earlier run (Session::routing_record), kept by the
     // front-end against the model file's fingerprint (model_fingerprint in bmoe/probe.h). With it the

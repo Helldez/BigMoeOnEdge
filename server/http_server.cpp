@@ -608,9 +608,19 @@ struct App {
         });
     }
 
+    // Admitted only after taking measure_m; a queued measurement must never reset an active job.
+    struct Planning {
+        EngineHost & host;
+        EngineHost::LoadJob job;
+        ~Planning() {
+            // dt:srv.plan.scope
+            if (job) host.end_planning(job);
+        }
+    };
+
     // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
     // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
-    PlanOutcome measure_plan() {
+    PlanOutcome measure_plan(const EngineHost::LoadJob & job) {
         RunConfig cfg = store.planning_config();
         // The projector the load pairs (load_current, below) is priced by the plan, so it is paired
         // here first: a plan made without it would size the cache into the projector's bytes.
@@ -636,7 +646,7 @@ struct App {
                     bus.publish("plan_progress",
                                 json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
                 },
-                have ? &kept : nullptr, have_knobs ? &knobs : nullptr, /*measure_knobs*/ true);
+                have ? &kept : nullptr, have_knobs ? &knobs : nullptr, /*measure_knobs*/ true, job.get());
         });
         bus.publish("plan_progress", json{{"step", "done"}});
         p.seq = ++plan_seq;
@@ -707,16 +717,10 @@ struct App {
     // The caller holds load_m.
     std::string load_current_locked() {
         if (store.config().model_path.empty()) return "no model selected";
-        // The planning flag is cleared after the load has been asked for, so the state goes from
-        // planning straight to loading (or to the error) with no empty in between; made with the flag,
-        // so whatever ends this early clears it too and no turn waits on it for ever.
-        struct EndPlanning {
-            EngineHost & h;
-            bool on = false;
-            ~EndPlanning() {
-                if (on) h.end_planning();
-            }
-        } end_planning{host};
+        // Hold through the handoff: no standalone measurement may reset the admitted load's flag.
+        // Cancellation/unload never takes this mutex, so it can signal the active job immediately.
+        std::unique_lock<std::mutex> measuring(measure_m);
+        Planning planning{host, nullptr};
         // The plan as made is what the load opens: no load is opened to try a side first. Where the
         // plan names a side of a decision across loads (the side it priced best, which this load
         // times as it serves), the other side is what opens if that one does not (fallback_for).
@@ -724,27 +728,34 @@ struct App {
         // dt:srv.load.auto
         if (auto_plan()) {
             host.unload();
-            host.begin_planning();
-            end_planning.on = true;
-            std::unique_lock<std::mutex> measuring(measure_m);
-            PlanOutcome p = measure_plan();
-            measuring.unlock();
-            // dt:srv.load.plan-ok
-            if (p.ok) {
-                // dt:srv.load.other-side
-                if (p.names_side()) {
-                    other = plan_other_side(p);
-                    if (other.ok) named = p;
-                }
-                store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
-                std::lock_guard<std::mutex> lk(plan_m);
-                load_plan = p;
-                last_plan = std::move(p);
-            } else {
-                // No plan for this load: an earlier one, possibly another model's, must not
-                // open under its name (#718).
-                store.clear_plan();
+            planning.job = host.begin_planning();
+            // dt:srv.load.plan-admitted
+            if (!planning.job) return "a model is already loading or being measured";
+            PlanOutcome p = measure_plan(planning.job);
+            // dt:srv.load.plan-stopped
+            if (planning.job->load()) return "the load was stopped";
+            // Rule evaluation can re-fit a placement: do it outside the acceptance lock, so a
+            // cancel does not wait for that work. Only its result is committed under the lock.
+            // dt:srv.load.other-side
+            if (p.ok && p.names_side()) {
+                other = plan_other_side(p);
+                if (other.ok) named = p;
             }
+            const bool accepted = host.accept_plan(planning.job, [&] {
+                // dt:srv.load.plan-ok
+                if (p.ok) {
+                    store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
+                    std::lock_guard<std::mutex> lk(plan_m);
+                    load_plan = p;
+                    last_plan = std::move(p);
+                } else {
+                    // No plan for this load: an earlier one, possibly another model's, must not
+                    // open under its name (#718).
+                    store.clear_plan();
+                }
+            });
+            // dt:srv.load.plan-current
+            if (!accepted) return "the load was stopped";
             publish_config();
         } else {
             // A load on the settings as they are runs no plan: an earlier auto load's must not be
@@ -765,10 +776,18 @@ struct App {
                 effective.fallback = std::make_shared<const RunConfig>(
                     effective_config(store.config_with_plan(load_plan.fallback_values)));
         }
-        mark_prefill_unconfirmed(effective);
+        // A cancel after the result was accepted must still prevent record writes and the load.
+        // load() checks the same job atomically at admission, closing the check/start gap.
+        // dt:srv.load.record-current
+        if (planning.job) {
+            if (!host.accept_plan(planning.job, [&] { mark_prefill_unconfirmed(effective); }))
+                return "the load was stopped";
+        } else {
+            mark_prefill_unconfirmed(effective);
+        }
         // dt:srv.load.with-other
-        if (!other.ok) return host.load(effective, requested);
-        return host.load(effective, requested, fallback_for(named, other));
+        if (!other.ok) return host.load(effective, requested, std::nullopt, planning.job);
+        return host.load(effective, requested, fallback_for(named, other), planning.job);
     }
 
     // A load that arms a prefill device says so in the model's record before it opens. The session
@@ -1809,17 +1828,28 @@ void register_routes(httplib::Server & svr, App & app) {
         if (app.host.loading()) return send_error(res, 409, "busy: a model is loading; plan once it is ready");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
-        PlanOutcome p = app.measure_plan();
-        measuring.unlock();
+        App::Planning planning{app.host, app.host.begin_planning()};
+        // dt:srv.plan.measure-admitted
+        if (!planning.job) return send_error(res, 409, "busy: a model is loading or being measured");
+        PlanOutcome p = app.measure_plan(planning.job);
+        const bool accepted = app.host.accept_plan(planning.job, [&] {
+            // dt:srv.plan.cache
+            if (p.ok) {
+                std::lock_guard<std::mutex> lk(app.plan_m);
+                app.last_plan = p;
+            }
+        });
+        // dt:srv.plan.measure-current
+        if (!accepted)
+            return send_json(res, json{{"available", true},
+                                       {"cancelled", true},
+                                       {"declined", true},
+                                       {"decline_reason", "the measurement was stopped"}});
         if (!p.ok) return send_json(res, json{{"available", true}, {"error", p.error}});
         json body = p.body;
         if (app.host.loaded_or_loading())
             body["warning"] = "measured with a model loaded: its memory reads as taken, so this plan is sized for a "
                               "smaller machine than this one. Auto mode plans with the model unloaded.";
-        {
-            std::lock_guard<std::mutex> lk(app.plan_m);
-            app.last_plan = std::move(p);
-        }
         send_json(res, body);
     });
 

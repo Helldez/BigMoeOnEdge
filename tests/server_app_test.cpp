@@ -8,6 +8,10 @@
 //     kept against the side, one more each time: a second failure reaches the count a plan drops the
 //     side at (MeasuredKnobs::unviable_max);
 //   * where the other side does not open either, the load ends in error and nothing is kept.
+//   * cancel and unload during auto planning discard even a successful late measurement, without
+//     opening a session, changing settings or records, or leaving waiting turns asleep;
+//   * standalone measurements have fresh cancellation jobs, preserve the cached plan when stopped,
+//     and end their planning state on both cancellation and success.
 //
 // Every wait is for an event (a state, a count), never for time to pass.
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
@@ -97,6 +101,19 @@ struct Script {
     int open_failures = 0; // opens made to fail
     int fail_next_opens = 0;
     int plans = 0; // plans made
+    int held_plan = 0;
+    int released_plan = 0;
+    int plan_gate_timeouts = 0;
+
+    int hold_next_plan() {
+        std::lock_guard<std::mutex> lk(m);
+        return held_plan = plans + 1;
+    }
+    void release_plan(int plan) {
+        std::lock_guard<std::mutex> lk(m);
+        released_plan = plan;
+        changed();
+    }
 
     template <class F> bool wait(F pred, std::chrono::milliseconds limit = k_ceiling) {
         std::unique_lock<std::mutex> lk(m);
@@ -126,6 +143,41 @@ int chat(httplib::Client & cli) {
                 {{"messages", json::array({{{"role", "user"}, {"content", "hello"}}})}, {"max_tokens", 4}});
 }
 
+struct HttpReply {
+    int status = -1;
+    json body = json::object();
+};
+
+// Concurrent requests must not share httplib's client or its connection.
+HttpReply request(int port, const char * method, const char * path, const json & body = json::object()) {
+    httplib::Client cli("127.0.0.1", port);
+    cli.set_connection_timeout(k_ceiling);
+    cli.set_read_timeout(k_ceiling);
+    cli.set_write_timeout(k_ceiling);
+    auto res = std::string(method) == "GET" ? cli.Get(path) : cli.Post(path, body.dump(), "application/json");
+    if (!res) return {};
+    json parsed = json::parse(res->body, nullptr, false);
+    return {res->status, parsed.is_discarded() ? json::object() : parsed};
+}
+
+HttpReply finish(std::future<HttpReply> & pending, const std::string & what) {
+    const bool done = pending.wait_for(k_ceiling) == std::future_status::ready;
+    check(done, what + " returns");
+    return done ? pending.get() : HttpReply{};
+}
+
+// Two turns admitted while planning leave one holding the serving ticket and one in the line.
+// The metric proves they reached the host before we cancel; a client-side "started" flag would not.
+bool wait_deferred(httplib::Client & cli) {
+    const auto end = std::chrono::steady_clock::now() + k_ceiling;
+    while (std::chrono::steady_clock::now() < end) {
+        auto res = cli.Get("/metrics");
+        if (res && res->status == 200 && res->body.find("llamacpp:requests_deferred 1\n") != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
 // Wait until /api/info satisfies `pred`; it changes on the server's own threads.
 bool wait_info(httplib::Client & cli, const std::function<bool(const json &)> & pred) {
     const auto end = std::chrono::steady_clock::now() + k_ceiling;
@@ -138,6 +190,11 @@ bool wait_info(httplib::Client & cli, const std::function<bool(const json &)> & 
 
 bool ready(const json & i) {
     return i.value("state", "") == "ready";
+}
+
+bool empty_host(const json & i) {
+    return i.value("state", "") == "empty" && i.contains("model") && i["model"].is_null() &&
+           i.value("error", "missing") == "" && !i.value("generating", true);
 }
 
 std::string config_value(httplib::Client & cli, const char * key) {
@@ -157,6 +214,21 @@ std::string read_knobs(const fs::path & routing) {
             return ss.str();
         }
     return "";
+}
+
+std::string read_file(const fs::path & path) {
+    std::ifstream f(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+json read_records(const fs::path & routing) {
+    json records = json::object();
+    std::error_code ec;
+    for (const auto & e : fs::directory_iterator(routing, ec))
+        if (e.is_regular_file()) records[e.path().filename().u8string()] = read_file(e.path());
+    return records;
 }
 
 } // namespace
@@ -191,18 +263,30 @@ int main() {
     // A plan that names a side of the device tier, as one beside a card of its own does; its own value
     // `trial-device-cache` tells the plan as made from the other side's.
     seams.plan = [&](const RunConfig & cfg) {
+        std::unique_lock<std::mutex> lk(sc.m);
+        const int serial = ++sc.plans;
+        const bool held = serial == sc.held_plan;
+        sc.changed();
+        // Deliberately ignore cancellation: acceptance must reject even a successful result from
+        // a probe that could not stop inside its current stage. Time only bounds a broken test.
+        if (held && !sc.cv.wait_for(lk, k_ceiling, [&] { return sc.released_plan >= serial; })) ++sc.plan_gate_timeouts;
+        lk.unlock();
         PlanOutcome p;
         p.ok = true;
         p.hardware = "0123456789abcdef";
-        p.body = json{{"available", true}, {"model", cfg.model_path}};
+        p.body = json{{"available", true}, {"model", cfg.model_path}, {"script_plan", serial}};
         p.values = {{"trial-device-cache", "1"}};
+        if (held) {
+            p.values["ctx-size"] = "16384";
+            // An accepted auto plan would arm an unconfirmed verdict before the opener runs.
+            p.values["prefill-device"] = "script-device";
+            p.decisions = json::array({{{"key", "ctx-size"}, {"reason", "a held scripted measurement"}}});
+        }
         auto basis = std::make_shared<PlanBasis>();
         basis->cfg = cfg;
         basis->facts.plan.config = cfg;
         basis->facts.plan.config.trial.device_tier = 1;
         p.basis = basis;
-        std::lock_guard<std::mutex> lk(sc.m);
-        ++sc.plans;
         return p;
     };
     seams.load_backends = false; // nothing here computes; the start does not wait on the machine's driver
@@ -275,6 +359,18 @@ int main() {
         return sc.plans;
     };
     const auto knobs = [&] { return read_knobs(dir / "routing"); };
+    const auto open_attempts = [&] {
+        std::lock_guard<std::mutex> lk(sc.m);
+        return sc.opened + sc.open_failures;
+    };
+    // Host state changes on unload; only these settings and on-disk effects must stay unchanged.
+    const auto effects = [&] {
+        const json c = get_json(cli, "/api/config");
+        return json{{"values", c.value("values", json::object())},
+                    {"plan", c.value("plan", json())},
+                    {"settings", read_file(dir / "settings.json")},
+                    {"records", read_records(dir / "routing")}};
+    };
 
     // ── the model named at launch: planned once, and loaded on the plan as made ──
     check(wait_info(cli, ready) && opened() == 1 && plans() == 1,
@@ -327,6 +423,90 @@ int main() {
               "the other side is loaded again");
         check(knobs().find("unviable=device_cache:" + std::to_string(MeasuredKnobs::unviable_max)) != std::string::npos,
               "the second failure is counted on the first: the side has reached the limit");
+    }
+
+    // A standalone measurement after a stop must have its own fresh job. It caches, but does not
+    // apply, its result, and its RAII end must leave no model "coming" for the next request.
+    const auto measure_fresh = [&](const std::string & why) {
+        const int before = plans(), before_opens = open_attempts();
+        const json before_effects = effects();
+        const HttpReply measured = request(port, "GET", "/api/plan?measure=1");
+        check(measured.status == 200 && measured.body.value("available", false) &&
+                  !measured.body.value("cancelled", false) && measured.body.value("script_plan", 0) == before + 1,
+              why + ": a fresh standalone measurement succeeds");
+        const json cached = get_json(cli, "/api/plan?cached=1");
+        check(cached.value("cached", false) && cached.value("script_plan", 0) == before + 1 && plans() == before + 1,
+              why + ": exactly that measurement replaces the cached plan");
+        check(empty_host(get_json(cli, "/api/info")) && effects() == before_effects && open_attempts() == before_opens,
+              why + ": measurement ends planning without applying settings, writing records or opening a model");
+    };
+    const json chat_body = {{"messages", json::array({{{"role", "user"}, {"content", "hello"}}})}, {"max_tokens", 4}};
+    const auto ask_chat = [&] { return request(port, "POST", "/v1/chat/completions", chat_body); };
+
+    // ── #746: an auto load stopped inside measurement cannot load later ──
+    for (const char * stop : {"/api/cancel", "/api/session/unload"}) {
+        const std::string why = std::string("auto planning, ") + stop;
+        const int before = plans(), before_opens = open_attempts();
+        const json before_effects = effects();
+        const int held_plan = sc.hold_next_plan();
+        // The model is already selected. No request-side settings write can mask a plan's effects.
+        auto loading = std::async(std::launch::async, [&] { return request(port, "POST", "/api/session/load"); });
+        check(sc.wait([&] { return sc.plans == held_plan; }) &&
+                  get_json(cli, "/api/info").value("state", "") == "planning" && open_attempts() == before_opens,
+              why + ": the auto load is held in planning, before any opener");
+        const json cached_before = get_json(cli, "/api/plan?cached=1");
+        auto first_turn = std::async(std::launch::async, ask_chat);
+        auto second_turn = std::async(std::launch::async, ask_chat);
+        check(wait_deferred(cli), why + ": chat turns are admitted and waiting for the planned model");
+        check(request(port, "POST", stop).status == 200, why + ": the stop answers while the probe is still held");
+        sc.release_plan(held_plan);
+        const HttpReply loaded = finish(loading, why + ": load");
+        check(loaded.status == 400 && loaded.body.value("error", "") == "the load was stopped",
+              why + ": a late successful plan is refused as a stopped load");
+        const HttpReply first = finish(first_turn, why + ": first waiting turn");
+        const HttpReply second = finish(second_turn, why + ": second waiting turn");
+        check(first.status == 503 && first.body.value("code", "") == "no_model" && second.status == 503 &&
+                  second.body.value("code", "") == "no_model",
+              why + ": waiting turns wake with no model, rather than answering from a delayed load");
+        check(empty_host(get_json(cli, "/api/info")) && open_attempts() == before_opens && plans() == before + 1,
+              why + ": the host stays empty, with one measurement and no delayed or fallback opener");
+        check(effects() == before_effects, why + ": no plan settings, persisted settings or knob records changed");
+        check(get_json(cli, "/api/plan?cached=1") == cached_before, why + ": the rejected plan was not cached");
+        measure_fresh(why);
+    }
+
+    // ── #746: stopping a standalone measurement preserves last_plan, not a sticky stop flag ──
+    for (const char * stop : {"/api/cancel", "/api/session/unload"}) {
+        const std::string why = std::string("standalone planning, ") + stop;
+        const int before = plans(), before_opens = open_attempts();
+        const json before_effects = effects(), cached_before = get_json(cli, "/api/plan?cached=1");
+        const int held_plan = sc.hold_next_plan();
+        auto measuring = std::async(std::launch::async, [&] { return request(port, "GET", "/api/plan?measure=1"); });
+        check(sc.wait([&] { return sc.plans == held_plan; }) &&
+                  get_json(cli, "/api/info").value("state", "") == "planning",
+              why + ": the standalone measurement owns an admitted planning job");
+        check(request(port, "POST", stop).status == 200, why + ": the stop answers before the probe returns");
+        // A refused concurrent request must neither measure nor re-admit/reset the active job,
+        // including after unload has already cleared the visible planning state.
+        check(request(port, "GET", "/api/plan?measure=1").status == 409 && plans() == before + 1,
+              why + ": an overlapping measurement is refused without resetting the stopped job");
+        sc.release_plan(held_plan);
+        const HttpReply measured = finish(measuring, why + ": measurement");
+        check(measured.status == 200 && measured.body.value("available", false) &&
+                  measured.body.value("cancelled", false) && measured.body.value("declined", false) &&
+                  measured.body.value("decline_reason", "") == "the measurement was stopped" &&
+                  !measured.body.contains("script_plan"),
+              why + ": a late success is returned as an available, cancelled, declined measurement");
+        check(get_json(cli, "/api/plan?cached=1") == cached_before,
+              why + ": cancellation does not replace the last successful cached plan");
+        check(empty_host(get_json(cli, "/api/info")) && open_attempts() == before_opens && plans() == before + 1 &&
+                  effects() == before_effects,
+              why + ": planning ends empty with exact serial counts and no settings, records or opener effects");
+        measure_fresh(why);
+    }
+    {
+        std::lock_guard<std::mutex> lk(sc.m);
+        check(sc.plan_gate_timeouts == 0, "every held measurement was released by an event, never by its watchdog");
     }
 
     const bool listening = stop_future.wait_for(k_ceiling) == std::future_status::ready;

@@ -17,6 +17,7 @@
 #include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
 #include "bmoe/planner.h"
+#include "bmoe/params.h"
 #include "bmoe/probe.h"
 #include "bmoe/routing.h"
 
@@ -195,6 +196,28 @@ static const Decision * find(const Plan & p, const char * knob) {
 }
 
 int main() {
+    // Stop before the first stage, either before entry or in its announcement. The callback runs
+    // before any backend/probe, so neither case needs a model or asks this test runner's hardware.
+    for (bool before_entry : {true, false}) {
+        RunConfig cfg = base_cfg();
+        cfg.n_threads = 3;
+        std::atomic<bool> stop{before_entry};
+        AutoPlanOptions opt;
+        opt.stop = &stop;
+        int stages = 0;
+        opt.on_step = [&](const char * step, int index, int) {
+            ++stages;
+            check(index == 0 && std::string(step) == "devices", "a stopped plan announces no later stage");
+            stop = true;
+        };
+        const AutoPlan stopped = probe_and_plan(cfg, PlanRequest{}, opt);
+        check(stages == 1 && stopped.hw.devices.empty() && stopped.plan.streaming_declined &&
+                  stopped.plan.decline_reason == "the measurement was stopped",
+              before_entry ? "a pre-stopped measurement declines before probing"
+                           : "a stage announcement can stop probing");
+        check(to_args(stopped.plan.config) == to_args(cfg) && stopped.plan.decisions.empty(),
+              "a stopped measurement keeps the request and no partial decisions");
+    }
     const ModelProfile model = moe_model();
 
     // The derived floor is the model's own arithmetic, not a constant carried from one device.

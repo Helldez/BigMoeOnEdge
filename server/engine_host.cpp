@@ -144,7 +144,6 @@ EngineHost::EngineHost(EventBus & bus, SessionOpener open) : bus_(bus), open_(st
 
 EngineHost::~EngineHost() {
     set_log_sink(nullptr); // before anything goes: the sink reaches into bus_
-    load_cancelled_ = true;
     cancel();
     if (loader_.joinable()) loader_.join();
     std::lock_guard<std::mutex> g(gen_m_);
@@ -160,17 +159,27 @@ void EngineHost::set_cpu_temperature(std::function<double()> provider) {
     cpu_temp_ = std::move(provider);
 }
 
-void EngineHost::begin_planning() {
+EngineHost::LoadJob EngineHost::begin_planning() {
+    std::lock_guard<std::mutex> life(life_m_);
+    LoadJob job;
     {
+        std::lock_guard<std::mutex> operation(job_m_);
         std::lock_guard<std::mutex> lk(m_);
-        if (!planning_.load() && state_ != State::Loading) load_started_ = std::chrono::steady_clock::now();
+        // dt:srv.plan.admit
+        if (planning_.load() || state_ == State::Loading) return nullptr;
+        job_ = job = std::make_shared<std::atomic<bool>>(false);
+        load_started_ = std::chrono::steady_clock::now();
         planning_ = true;
     }
     publish_state();
+    return job;
 }
 
-void EngineHost::end_planning() {
+void EngineHost::end_planning(const LoadJob & job) {
     {
+        std::lock_guard<std::mutex> operation(job_m_);
+        // dt:srv.plan.end-current
+        if (job != job_) return;
         // Under the lock a waiting turn reads it with (take_turn), so its wake-up is not lost.
         std::lock_guard<std::mutex> lk(m_);
         planning_ = false;
@@ -178,30 +187,56 @@ void EngineHost::end_planning() {
     publish_state();
 }
 
+bool EngineHost::accept_plan(const LoadJob & job, const std::function<void()> & accept) {
+    std::lock_guard<std::mutex> operation(job_m_);
+    // dt:srv.plan.accept
+    if (!job || job != job_ || job->load()) return false;
+    accept();
+    return true;
+}
+
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
     return load(effective, requested, std::nullopt);
 }
 
-std::string
-EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback) {
+std::string EngineHost::load(const RunConfig & effective,
+                             const RunConfig & requested,
+                             std::optional<OpenFallback> fallback,
+                             LoadJob job) {
     const ValidationResult v = validate(effective);
     if (!v) return engine_message(v.error);
     std::lock_guard<std::mutex> life(life_m_);
-    load_cancelled_ = false; // this load's own: only an unload during it cancels it
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
+    }
+    if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
+    std::shared_ptr<HostedSession> previous;
+    {
+        std::lock_guard<std::mutex> operation(job_m_);
+        std::lock_guard<std::mutex> lk(m_);
+        // dt:srv.load.handoff
+        if (job && (job != job_ || job->load())) return "the load was stopped";
+        // dt:srv.load.admit
+        if (!job) {
+            if (planning_.load()) return "a plan is already being measured";
+            job_ = job = std::make_shared<std::atomic<bool>>(false);
+        }
         if (!planning_.load()) load_started_ = std::chrono::steady_clock::now(); // else the planning's clock runs on
         state_ = State::Loading;
         error_.clear();
         model_ = nullptr;
         requested_ = requested;
         last_turn_ = nullptr;
+        previous = session_;
     }
-    if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
+    // Stop only the old turn: cancel() would also stop the new load. Its job was admitted before
+    // Loading became observable and is never reset afterwards, including across a plan's handoff.
+    // dt:srv.load.previous
+    if (previous) previous->cancel();
+    previous.reset();
     publish_state();
-    cancel();
-    start_loader(effective, std::move(fallback));
+    start_loader(effective, std::move(fallback), std::move(job));
     return "";
 }
 
@@ -210,8 +245,8 @@ bool EngineHost::loading() const {
     return state_ == State::Loading;
 }
 
-void EngineHost::start_loader(const RunConfig & effective_in, std::optional<OpenFallback> fallback) {
-    loader_ = std::thread([this, effective_in, fallback] {
+void EngineHost::start_loader(const RunConfig & effective_in, std::optional<OpenFallback> fallback, LoadJob job) {
+    loader_ = std::thread([this, effective_in, fallback, job] {
         RunConfig effective = effective_in;
         // Wait out any generation, then drop the old session BEFORE opening the new one: two large
         // models resident at once is exactly the memory this engine exists to avoid spending.
@@ -224,28 +259,50 @@ void EngineHost::start_loader(const RunConfig & effective_in, std::optional<Open
             last_turn_ = nullptr;
         }
         std::string error;
-        std::shared_ptr<HostedSession> s = engine_.run([&] { return open_(session_config_from(effective), error); });
+        const auto open_with_stop = [&](const RunConfig & config, std::string & why) {
+            SessionConfig sc = session_config_from(config);
+            sc.stop = job.get();
+            // dt:srv.loader.open-current
+            if (job->load()) return std::unique_ptr<HostedSession>{};
+            return open_(sc, why);
+        };
+        std::shared_ptr<HostedSession> s = engine_.run([&] { return open_with_stop(effective, error); });
+        bool used_fallback = false;
         // The plan's side would not open: the other side, which a plan may serve instead. Not for a
         // load an unload has cancelled. Only an open of the other side says the first failure was the
         // side's: where both fail, the first error is the one reported, and nothing is told.
         // dt:srv.loader.fallback
-        if (!s && fallback && !load_cancelled_.load()) {
+        if (!s && fallback && !job->load()) {
             std::string second;
             std::shared_ptr<HostedSession> other =
-                engine_.run([&] { return open_(session_config_from(fallback->effective), second); });
+                engine_.run([&] { return open_with_stop(fallback->effective, second); });
             if (other) {
                 s = std::move(other);
                 effective = fallback->effective;
+                used_fallback = true;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> operation(job_m_);
+            // A fallback's settings/records are committed only if this load is still wanted. The
+            // callback may read the host, so m_ is not held; cancel uses job_m_ to order acceptance.
+            // dt:srv.loader.accept-fallback
+            if (!job->load() && used_fallback) {
                 {
                     std::lock_guard<std::mutex> lk(m_);
                     requested_ = fallback->requested;
                 }
                 if (fallback->taken) fallback->taken(error);
             }
-        }
-        {
             std::lock_guard<std::mutex> lk(m_);
-            if (!s) {
+            // dt:srv.loader.stopped
+            if (job->load()) {
+                s.reset();
+                state_ = State::Empty;
+                error_.clear();
+                model_ = nullptr;
+                log_printf(LogLevel::Info, "the load was stopped");
+            } else if (!s) {
                 state_ = State::Error;
                 error_ = error.empty() ? "the model failed to load" : engine_message(error);
                 model_ = nullptr;
@@ -299,8 +356,10 @@ void EngineHost::start_loader(const RunConfig & effective_in, std::optional<Open
 }
 
 void EngineHost::unload() {
+    // Signal before waiting for lifecycle ownership too: load() may still be announcing itself.
+    cancel();
     std::lock_guard<std::mutex> life(life_m_);
-    load_cancelled_ = true; // a load under way opens no fallback after it
+    // Catch a load admitted between the first signal and taking life_m_.
     cancel();
     if (loader_.joinable()) loader_.join();
     {
@@ -308,6 +367,7 @@ void EngineHost::unload() {
         std::lock_guard<std::mutex> lk(m_);
         session_.reset();
         state_ = State::Empty;
+        planning_ = false;
         error_.clear();
         model_ = nullptr;
         last_turn_ = nullptr;
@@ -340,6 +400,11 @@ json EngineHost::last_turn() const {
 }
 
 void EngineHost::cancel() {
+    {
+        std::lock_guard<std::mutex> operation(job_m_);
+        // dt:srv.cancel.job
+        if (job_) job_->store(true);
+    }
     std::shared_ptr<HostedSession> s;
     {
         std::lock_guard<std::mutex> lk(m_);

@@ -261,14 +261,31 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
                        std::chrono::duration<double>(now - t_step).count());
         t_step = now;
     };
-    const auto starting = [&] {
+    // dt:plan.facts.stop
+    // A measurement a person stopped stops asking the machine. Asked between two stages rather than
+    // inside one: the stage that was running has ended, and nothing is left half-read. The plan it
+    // returns declined and says why, which is the shape a caller already handles for a machine that
+    // cannot be read. The caller must not continue an auto-load with a cancelled measurement.
+    const auto stopped = [&] {
+        if (!opt.stop || !opt.stop->load(std::memory_order_relaxed)) return false;
+        // A refusal is still a plan: the config it carries stays runnable, unchanged from the request,
+        // and the reason stops a caller concluding the engine is broken. A stopped measurement decided
+        // nothing, so every knob keeps the value it was given.
+        r.plan = Plan{};
+        r.plan.config = cfg;
+        r.plan.streaming_declined = true;
+        r.plan.decline_reason = "the measurement was stopped";
+        return true;
+    };
+    const auto starting = [&]() -> bool {
         took();
         if (opt.on_step && step < k_plan_step_count) opt.on_step(k_plan_steps[step], step, k_plan_step_count);
         ++step;
+        return !stopped();
     };
 
     detail::log_memory_snapshot("auto-probe-begin");
-    starting(); // devices
+    if (!starting()) return r; // devices
     register_backends();
     // The probes load the model too; asked for, their DEBUG lines are wanted as much as the run's.
     detail::set_llama_log_debug(cfg.llama_debug_log);
@@ -283,7 +300,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     // dt:plan.facts.isolated
     if (opt.isolated_probe_args)
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
-    starting(); // model
+    if (!starting()) return r; // model
     r.model = probe_model(path, probe_engine_layers(path));
     // The head of a file of its own is a file like the model: its size is what placing it costs.
     if (!cfg.spec.mtp_head.empty()) {
@@ -311,7 +328,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     probe_device_support(r.hw, r.model);
     detail::log_memory_snapshot("auto-device-support");
     llama_backend_init();
-    starting(); // compute
+    if (!starting()) return r; // compute
     probe_bandwidth(r.hw, r.model);
     detail::log_memory_snapshot("auto-bandwidth");
     // Only route-ahead reads this fact, and route-ahead arms only when the caller sets it, so a plan
@@ -320,7 +337,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     if (cfg.moe.route_ahead > 0) probe_gate_gemv(r.hw, r.model);
     probe_device_costs(r.hw, r.model);
     detail::log_memory_snapshot("auto-device-costs");
-    starting(); // storage
+    if (!starting()) return r; // storage
     // Where the expert reads land, which on a split model is not the file the caller named.
     // dt:plan.facts.storage
     if (opt.probe_io)
@@ -329,11 +346,11 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     detail::log_memory_snapshot("auto-storage");
     // What the run must at least hold: the dense set and the cache FLOOR the engine will enforce,
     // which is the larger of one token cycle and the generic guard - not one token cycle alone.
-    starting(); // memory
+    if (!starting()) return r; // memory
     const uint64_t guard = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
     probe_headroom(r.hw, opt.probe_mem, r.model.dense_bytes + (std::max)(r.model.token_cycle_bytes, guard));
     detail::log_memory_snapshot("auto-headroom");
-    starting(); // placement
+    if (!starting()) return r; // placement
     // The fitter places on the backends the plan will choose, one per card, or on the caller's list:
     // left empty there, it would place on llama.cpp's default list and the split would name devices
     // the caller left out.
@@ -346,8 +363,9 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
                                   cfg.cache_type_k, cfg.cache_type_v, fitter_devices, &cfg.spec);
     r.backends = fitter_devices;
     detail::log_memory_snapshot("auto-probe-end");
-    starting(); // rules
+    if (!starting()) return r; // rules
     r.plan = plan_on_facts(r, cfg, req, r.model);
+    stopped(); // also discard a result cancelled while the rules or their re-fits ran
     took();
     return r;
 }
