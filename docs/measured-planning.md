@@ -564,7 +564,10 @@ count the drafts its verifies accepted, so its rate compares with no side timed 
 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3 for the experts' copy,
 and every load after turned the copy off and decoded 30-40% slower. The session does not time it
 (`record_side_rate` keeps nothing else from a drafting load), and the host call's rule does not ask such a
-load to time its unmeasured side.
+load to time its unmeasured side. The device tier's, the width's and the shared-memory device's rules
+never serve a side in order to time it: they serve the side measured or priced faster and time that, so a
+drafting load serves what a load without drafts would. The side stays named on such a load, untimed, so a
+failed open still counts against it.
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one

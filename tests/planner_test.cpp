@@ -4413,6 +4413,30 @@ int main() {
                           std::string::npos,
                   "device tier, the cache measured under the fitter's price: the fitter's placement is served",
                   e ? e->reason : "no decision");
+            // A load that drafts serves the side a load without drafts would: these rules serve their
+            // measured or priced side and only time it, so drafting changes nothing in what is served (the
+            // session records no rate from it, record_side_rate). The side stays named: a failed open still
+            // counts against it (record_side_unviable).
+            for (const MeasuredKnobs & k : {MeasuredKnobs{}, once}) {
+                ModelProfile mm = model;
+                mm.knobs = k;
+                RunConfig drafting = base_cfg();
+                drafting.spec.source = DraftSource::ngram;
+                PlanRequest typed;
+                typed.pinned = {"spec"};
+                const Plan plain = plan_run(base_cfg(), slow_cores, mm, half, typed, PlannerPolicy::defaults());
+                const Plan dr = plan_run(drafting, slow_cores, mm, half, typed, PlannerPolicy::defaults());
+                check(dr.config.spec.is_ngram() && dr.config.moe.device_cache_mb == plain.config.moe.device_cache_mb &&
+                          dr.config.buft_overrides.size() == plain.config.buft_overrides.size() &&
+                          dr.config.n_ubatch == plain.config.n_ubatch &&
+                          dr.config.n_gpu_layers == plain.config.n_gpu_layers &&
+                          dr.config.trial.device_tier == plain.config.trial.device_tier &&
+                          dr.config.trial.width_side == plain.config.trial.width_side,
+                      std::string("device tier, a drafting load: the side a load without drafts would serve (") +
+                          (k.device_cache_tps > 0.0 ? "the cache timed" : "nothing timed") + ")",
+                      std::to_string(dr.config.moe.device_cache_mb) + " vs " +
+                          std::to_string(plain.config.moe.device_cache_mb));
+            }
             check(validate(second.config).ok, "device tier, second load: a valid config",
                   validate(second.config).error);
             // The placement is priced at half its ceiling (6.7 tok/s), what such placements were measured
