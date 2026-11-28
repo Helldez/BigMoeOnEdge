@@ -496,6 +496,21 @@ int main() {
         expect_ok("sampling without speculation stays valid", c);
     }
 
+    // The self source: the model drafting with fewer experts. Its width is bounded here from below and
+    // by a named ceiling; the model's own count bounds it at open (self_draft_session).
+    {
+        RunConfig c = ok_base();
+        c.spec.source = DraftSource::self;
+        expect_ok("the self source at its default width is valid", c);
+        c.spec.draft_p_min = 0.6f;
+        expect_ok("the confidence floor applies to a self-draft", c);
+        c.spec.draft_p_min = 0.0f;
+        c.spec.self_draft_experts = 0;
+        expect_fail("a self-draft routed to no expert is rejected", c);
+        c.spec.self_draft_experts = SpecConfig::self_draft_experts_limit + 1;
+        expect_fail("a self-draft above the width limit is rejected", c);
+    }
+
     // The n-gram source: the same shared rules, plus its own gate, and no cross-talk with the
     // MTP-only knob — a flag the chosen source cannot act on is rejected, not silently ignored.
     {

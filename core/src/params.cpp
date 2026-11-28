@@ -223,6 +223,7 @@ constexpr int prefetch_lo = 1, prefetch_hi = 2;
 constexpr int predict_spec_lo = 1, predict_spec_hi = 4;
 constexpr int draft_lo = 2, draft_hi = 4;
 constexpr int ngram_min_lo = 2, ngram_min_hi = 4;
+constexpr int self_draft_experts_lo = 1, self_draft_experts_hi = 4;
 constexpr int ngram_max_lo = 8, ngram_max_hi = 16;
 constexpr int route_ahead_lo = 1, route_ahead_hi = 2;
 } // namespace usual
@@ -1266,17 +1267,19 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("spec", "Speculative drafts", G::Speculation, L::Advanced,
                           "Draft a continuation, then verify it in one wider decode. mtp uses the model's own "
                           "prediction head (needs the nextn block); ngram looks the recent tokens up in the "
-                          "prompt and the answer. Needs greedy decoding.");
+                          "prompt and the answer; self drafts with the model itself routed to fewer experts "
+                          "(--self-draft-experts). Needs greedy decoding.");
         d.form = true;
         d.type = ParamType::Choice;
         d.flag.clear();
-        d.value_hint = "mtp|ngram";
-        d.switches = {{"--mtp", "mtp"}, {"--ngram", "ngram"}};
+        d.value_hint = "mtp|ngram|self";
+        d.switches = {{"--mtp", "mtp"}, {"--ngram", "ngram"}, {"--self-draft", "self"}};
         d.exclusive_switches = true;
         bind_choice<DraftSource>(d, [](RunConfig & c) -> DraftSource & { return c.spec.source; },
                                  {{DraftSource::none, {"none", "off"}},
                                   {DraftSource::mtp, {"mtp", "MTP head"}},
-                                  {DraftSource::ngram, {"ngram", "n-gram lookup"}}});
+                                  {DraftSource::ngram, {"ngram", "n-gram lookup"}},
+                                  {DraftSource::self, {"self", "Model itself, fewer experts"}}});
         d.details = "Guesses a few tokens ahead and checks them in one pass; the answer does not change. Needs "
                     "Temperature 0, and gains depend on the model.";
         t.push_back(d);
@@ -1312,13 +1315,23 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("mtp-p-min", "MTP confidence floor", G::Speculation, L::Advanced,
-                          "MTP only: stop drafting when the head's best candidate falls below this "
+                          "MTP and self: stop drafting when the best candidate falls below this "
                           "probability (0 = always draft the full width).");
         d.type = ParamType::Float;
         d.value_hint = "F";
         bounds(d, 0.0, SpecConfig::draft_p_min_max);
         special(d, "0", "always the full width");
         bind_float(d, [](RunConfig & c) -> float & { return c.spec.draft_p_min; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("self-draft-experts", "Self-draft experts", G::Speculation, L::Advanced,
+                          "Self only: routed experts per token while the model drafts for itself, below the "
+                          "model's own count. The verify routes as the model does, so the answer does not move.");
+        d.value_hint = "N";
+        bounds(d, 1, SpecConfig::self_draft_experts_limit, "experts");
+        typical(d, usual::self_draft_experts_lo, usual::self_draft_experts_hi);
+        bind_int(d, [](RunConfig & c) -> int & { return c.spec.self_draft_experts; });
         t.push_back(d);
     }
     {

@@ -148,6 +148,11 @@ Placement probe_placement(const char * model_path,
     // Any speculation keeps rollback snapshots of the recurrent state, one per drafted position, in
     // the target's own context (Session::open).
     if (spec && spec->enabled()) cparams.n_rs_seq = (uint32_t) spec->draft_max;
+    // A self-draft's second sequence, as Session::open asks for it.
+    if (spec && spec->is_self()) {
+        cparams.n_seq_max = 2;
+        cparams.kv_unified = true;
+    }
     // The MTP draft context, opened as the session opens it: its head is the target's own block
     // (weights already counted, the target loaded with it) or a file of its own on the host, and
     // either way its state and compute buffers land on the devices beside the target's.

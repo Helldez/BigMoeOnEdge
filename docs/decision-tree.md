@@ -2024,6 +2024,9 @@ flowchart TD
 - condition: `if (!spec_on || room <= 0) return true;`
 - condition: `if (mtp_on) {`
 - MTP → the upstream draft, capped at the room.
+- condition: `} else if (im.cfg.spec.is_self()) {`
+- Self → the model's own single-token decodes on sequence 1 (a copy of 0), its router capped at
+  `self_draft_experts`; the sequence is dropped before the verify.
 - n-gram → `req.draft.ngram`.
 
 #### `req.draft.ngram` — An n-gram draft from the context

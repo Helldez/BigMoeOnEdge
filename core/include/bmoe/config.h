@@ -471,6 +471,7 @@ enum class DraftSource {
     none,  // no speculation: one token per decode
     mtp,   // the model's own trained multi-token-prediction head (needs the nextn block)
     ngram, // prompt-lookup over prompt + generated tokens (needs nothing from the model)
+    self,  // the model itself, routing each token to fewer experts (SpecConfig::self_draft_experts)
 };
 
 // Self-speculative decoding: draft draft_max continuation tokens, then verify all of them in ONE
@@ -532,6 +533,17 @@ struct SpecConfig {
     // measure rather than a constant to guess.
     float draft_p_min = 0.0f;
 
+    // Self only. Routed experts per token while the model drafts for itself: the same weights, the
+    // same router, the top self_draft_experts of its probabilities instead of the model's own count,
+    // their weights normalised as the model normalises them. The verify pass routes as the model does,
+    // so the answer is the model's whatever this is; it only moves how much of the draft is accepted
+    // and what a draft costs. It must be below the model's own count, which only the file says, so
+    // open() checks that bound. The draft decodes on a second sequence that shares the target's KV
+    // prefix (llama_memory_seq_cp) and is dropped before the verify, so it needs no KV and no prefill
+    // of its own.
+    int self_draft_experts = 2;
+    static constexpr int self_draft_experts_limit = 64;
+
     // N-gram only. Shortest suffix match that is allowed to draft. This is the whole economics of
     // the n-gram source: below it the step drafts NOTHING and costs exactly a plain decode, so the
     // floor of the feature is the baseline rather than a loss. Raising it buys precision (fewer,
@@ -551,6 +563,23 @@ struct SpecConfig {
     bool enabled() const { return source != DraftSource::none; }
     bool is_mtp() const { return source == DraftSource::mtp; }
     bool is_ngram() const { return source == DraftSource::ngram; }
+    bool is_self() const { return source == DraftSource::self; }
+    // A draft made by weights, with probabilities to gate on ({mtp-p-min}): every source but n-gram.
+    bool has_confidence() const { return is_mtp() || is_self(); }
+    // As a run reports it (RunInfo::spec, the CLI's summary lines): the choice's own value.
+    const char * source_name() const {
+        switch (source) {
+        case DraftSource::mtp:
+            return "mtp";
+        case DraftSource::ngram:
+            return "ngram";
+        case DraftSource::self:
+            return "self";
+        case DraftSource::none:
+            break;
+        }
+        return "off";
+    }
 };
 
 // Prefill on an accelerator, decode on the CPU. Off unless `device` names a ggml device.

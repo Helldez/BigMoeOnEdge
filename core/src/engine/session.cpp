@@ -1306,6 +1306,12 @@ bool Session::Impl::read_model(Opening & o) {
         const GgufModelInfo & mi = o.gguf();
         n_expert_used = mi.ok ? mi.n_expert_used : 0;
     }
+    // A self-draft narrower than nothing is no draft, and one as wide as the model is the model: the
+    // bound is the file's own count, which validate() could not know.
+    if (cfg.spec.is_self() && cfg.spec.self_draft_experts >= n_expert_used)
+        return o.fail("{self-draft-experts} (" + std::to_string(cfg.spec.self_draft_experts) +
+                      ") must be below the experts this model routes each token to (" + std::to_string(n_expert_used) +
+                      "): a draft routed as wide is the model itself");
 
     // dt:open.read.layout
     if (cfg.moe.enabled) {
@@ -1462,6 +1468,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
+    // A self-draft decodes on a second sequence that starts as a copy of the first and is dropped
+    // before the verify. A unified KV makes that copy a tag on the prefix's cells rather than a second
+    // cache of half the context; a recurrent state is copied on the draft's first write.
+    if (cfg.spec.is_self()) {
+        cparams.n_seq_max = 2;
+        cparams.kv_unified = true;
+    }
     // The device-side expert cache is armed only on the second creation (see open()): with it on,
     // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
     // finds those tensors by the nodes that read them, runs on a context without it.
@@ -2414,9 +2427,9 @@ void Session::Impl::describe_run(Opening & o) {
         ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
-        ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
+        ri.spec = cfg.spec.source_name();
         ri.spec_draft_max = cfg.spec.enabled() ? cfg.spec.draft_max : 0;
-        ri.mtp_p_min = cfg.spec.is_mtp() ? cfg.spec.draft_p_min : 0.0f;
+        ri.mtp_p_min = cfg.spec.has_confidence() ? cfg.spec.draft_p_min : 0.0f;
         ri.ngram_min_match = cfg.spec.is_ngram() ? cfg.spec.ngram_min_match : 0;
         ri.temp = cfg.sampling.temp;
         ri.top_k = cfg.sampling.top_k;
@@ -3898,6 +3911,8 @@ struct Session::Impl::Turn {
             // conditioned on the target's own hidden states instead of the head's guesses.
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
                 return fail(RunError::Failed, "the MTP draft context does not support rewinding its KV cache");
+        } else if (im.cfg.spec.is_self()) {
+            if (!self_draft(s, std::min(im.cfg.spec.draft_max, room))) return false;
         } else {
             // The n-gram source reads the text and nothing else: no draft context, no decode, no
             // expert read, so the bytes bracketed around this arm are zero by construction. When
@@ -3911,6 +3926,53 @@ struct Session::Impl::Turn {
         if (s.n_draft > 0) ++im.drafted_steps;
         s.draft_s += secs(d0, clock_t_::now());
         if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - db0;
+        return true;
+    }
+
+    // ── self-draft: the model drafts for itself, routed to fewer experts ──
+    //
+    // Sequence 1 starts as a copy of sequence 0 (the KV prefix shared, a recurrent state copied on
+    // its first write), takes one decode per drafted token with the router's top-k capped, and is
+    // dropped whole before the verify, so the target's own sequence never holds a row the narrow
+    // routing wrote. That is why no rollback snapshot is spent on drafting, and why the draft needs
+    // neither a KV nor a prefill of its own: everything it reads up to n_past is the model's.
+    bool self_draft(Step & s, int n_max) {
+        llama_memory_t mem = llama_get_memory(ctx);
+        constexpr llama_seq_id k_draft_seq = 1;
+        llama_memory_seq_rm(mem, k_draft_seq, -1, -1);
+        llama_memory_seq_cp(mem, /*src*/ 0, k_draft_seq, -1, -1);
+        llama_set_n_expert_used_cap(ctx, (uint32_t) im.cfg.spec.self_draft_experts);
+        llama_token cur = tok;
+        llama_pos pos = n_past;
+        int32_t n_seq_id = 1;
+        llama_seq_id seq = k_draft_seq;
+        llama_seq_id * seqs[1] = {&seq};
+        int8_t want_logits = 1;
+        llama_batch b{/*n_tokens*/ 1, &cur, /*embd*/ nullptr, &pos, &n_seq_id, seqs, &want_logits};
+        int dec = 0;
+        for (int i = 0; i < n_max; ++i, ++pos) {
+            dec = llama_decode(ctx, b);
+            if (dec != 0) break;
+            const float * lg = llama_get_logits_ith(ctx, -1);
+            const llama_token t = argmax(lg, im.n_vocab);
+            // The draft's own confidence in its proposal, as for a head: softmax at the argmax.
+            if (im.cfg.spec.draft_p_min > 0.0f) {
+                const float top = lg[t];
+                double z = 0.0;
+                for (int v = 0; v < im.n_vocab; ++v)
+                    z += std::exp((double) (lg[v] - top));
+                if (1.0 / z < im.cfg.spec.draft_p_min) break;
+            }
+            im.draft_buf.push_back(t);
+            if (llama_vocab_is_eog(im.vocab, t)) break;
+            cur = t;
+        }
+        llama_set_n_expert_used_cap(ctx, 0);
+        llama_memory_seq_rm(mem, k_draft_seq, -1, -1);
+        // 1 is llama.cpp's "no KV slot": the context is too full for the draft's rows beside the
+        // target's, so the step verifies what was drafted, or decodes plainly. Anything else failed.
+        if (dec != 0 && dec != 1) return fail(RunError::Failed, "the self-draft decode failed");
+        s.n_draft = (int) im.draft_buf.size();
         return true;
     }
 

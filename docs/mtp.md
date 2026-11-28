@@ -326,3 +326,29 @@ widening is real and visible — flash bytes per token rise from 19.7 to 33.7 Mi
 positions route independently. It still wins because compute per token falls further (0.115 →
 0.088 s) than the extra I/O costs on this host. **On a flash-I/O-bound device that balance can
 invert**, which is why the flag ships off and the phone A/B is a separate measurement.
+
+## Self-draft: the model with fewer experts
+
+`--self-draft --self-draft-experts N` (experimental) drafts with no file at all. The model drafts for
+itself, with each token routed to the top `N` of its router's probabilities instead of its own count,
+and its weights normalised as the model normalises them. The verify pass routes as the model does,
+so `N` only moves how much of the draft is accepted and what a draft costs, never the answer.
+
+- **No KV and no prefill of its own.** The draft decodes on a second sequence that starts as a copy of
+  the target's (`llama_memory_seq_cp`): the prefix's KV cells are shared, and a recurrent state is
+  copied on the draft's first write. The sequence is dropped whole before the verify, so the
+  target's sequence never holds a row the narrow routing wrote, and no rollback snapshot is spent
+  on drafting. The context is opened with two sequences over one unified KV.
+- **The cap** is the fork's `llama_set_n_expert_used_cap` ([seam.md](seam.md)), set around the draft
+  decodes and cleared before the verify.
+- **Bounds**: `N` from 1 to below the model's own count, the latter checked at open, since only the
+  file says it.
+- **Cost.** A drafted token pays the whole dense path (attention, any recurrent layers, a shared
+  expert) and `N` of the model's experts. Where a token is dense-bound that is most of a token, and
+  the draft is close to break-even. Where a token waits on expert reads, a narrow draft is cheap.
+  No speed is measured yet.
+- **The gate** (`self_draft_session`, a plain-attention and a hybrid tiny fixture) checks that:
+  - the run drafts and accepts;
+  - a drafted token streams half the bytes of a plain one at `N` = 1 of 2;
+  - a second turn repeats the first;
+  - `N` as wide as the model is refused.

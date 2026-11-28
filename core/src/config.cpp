@@ -247,7 +247,8 @@ ValidationResult validate(const RunConfig & cfg) {
     // A probability, so [0,1]. 1 would mean "only draft what the head is certain of", which is a
     // legitimate (if extreme) setting; above 1 nothing would ever be drafted and the flag would be
     // an expensive way to decode one token at a time.
-    if (cfg.spec.is_mtp() && !(cfg.spec.draft_p_min >= 0.0f && cfg.spec.draft_p_min <= SpecConfig::draft_p_min_max)) {
+    if (cfg.spec.has_confidence() &&
+        !(cfg.spec.draft_p_min >= 0.0f && cfg.spec.draft_p_min <= SpecConfig::draft_p_min_max)) {
         return fail("{mtp-p-min} must be between 0 and 1");
     }
     // Both of these are source-specific knobs. Accepting one against the other source would silently
@@ -256,6 +257,12 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.spec.is_ngram() && cfg.spec.draft_p_min != 0.0f) {
         return fail("{mtp-p-min} is for MTP drafts (the head's own confidence in its proposal) and means nothing "
                     "to n-gram drafts, which have no probabilities: their confidence gate is {ngram-min-match}.");
+    }
+    // The upper bound is the model's own count, read from the file at open (Session::open).
+    if (cfg.spec.is_self() &&
+        (cfg.spec.self_draft_experts < 1 || cfg.spec.self_draft_experts > SpecConfig::self_draft_experts_limit)) {
+        return fail("{self-draft-experts} must be between 1 and " +
+                    std::to_string(SpecConfig::self_draft_experts_limit));
     }
     if (cfg.spec.is_ngram() &&
         (cfg.spec.ngram_max_match < 1 || cfg.spec.ngram_max_match > SpecConfig::ngram_match_limit)) {

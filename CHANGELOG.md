@@ -11,6 +11,16 @@ branch (`bmoe/moe-cache-exp-2611`, and `bmoe/lossless-cache-2811` on top of it, 
 it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
 
 ### Added
+- **Self-draft** (`--self-draft`, `--self-draft-experts N`), experimental: the model drafts for itself
+  with each token routed to its top N experts instead of its own count, and the normal full model
+  verifies, so the answer is the model's. It needs no file, no KV and no prefill of its own. The draft
+  decodes on a second sequence that shares the KV prefix (`llama_memory_seq_cp`) and is dropped before
+  each verify, which also keeps a hybrid model's recurrent state clean. The fork gains
+  `llama_set_n_expert_used_cap` (fork branch `bmoe/self-draft-2811`). N must be below the model's count,
+  checked at open. Off by default and unmeasured: the estimate is 0.93-0.95x where a token is
+  dense-bound. Gate `self_draft_session`, on a plain-attention and a hybrid tiny fixture: a drafted
+  token streams half the bytes of a plain one at N = 1 of 2, and a second turn repeats the first
+  ([mtp.md](docs/mtp.md#self-draft-the-model-with-fewer-experts)).
 - **A streamed model computed on a device that shares the host's memory.** On a unified-memory
   machine a model larger than its memory streamed its experts to the cores. `--auto` now prices,
   against that stream, every layer on the device with the stream's expert cache moved onto it, its

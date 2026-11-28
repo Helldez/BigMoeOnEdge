@@ -83,6 +83,8 @@ target_include_directories(bmoe_device_answer_test PRIVATE ${CMAKE_SOURCE_DIR}/c
 add_test(NAME device_answer COMMAND bmoe_device_answer_test)
 
 # The real Session path must apply request-local grammar to both token selection sites.
+add_executable(bmoe_self_draft_session_test self_draft_session_test.cpp)
+target_link_libraries(bmoe_self_draft_session_test PRIVATE bmoe_core)
 add_executable(bmoe_output_constraint_session_test output_constraint_session_test.cpp)
 target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)
 target_include_directories(bmoe_output_constraint_session_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
@@ -315,6 +317,10 @@ if(PYTHON3)
     add_test(NAME output_constraint_session COMMAND bmoe_output_constraint_session_test
              "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
     set_tests_properties(output_constraint_session PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+    add_test(NAME self_draft_session COMMAND bmoe_self_draft_session_test
+             "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf" "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-nemotron_h_moe.gguf")
+    set_tests_properties(self_draft_session PROPERTIES FIXTURES_REQUIRED
+                         "TINY_MOE_MODEL_qwen3moe;TINY_MOE_MODEL_nemotron_h_moe")
 
     if(TARGET bmoe_expert_read_failure_test)
         add_test(NAME expert_read_failure COMMAND bmoe_expert_read_failure_test

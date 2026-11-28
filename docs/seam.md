@@ -164,6 +164,10 @@ on its own branch so the default pin can return to the hook branch unchanged.
   serves), `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the
   background) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch; where the
   host does not write that memory in place the misses are uploaded into it on the backend's queue).
+- **A cap on the routed experts per token** (`llama_set_n_expert_used_cap`, 0 = the model's count):
+  `build_moe_ffn` takes the top N of the same router probabilities and normalises them as the model
+  does, and graph reuse compares the cap. The self-draft source drafts with it (`--self-draft`); it is
+  the one commit of `bmoe/self-draft-2811`, on top of `bmoe/lossless-cache-2811`.
 - **Compute buffer room for a lent cache**: `ggml_gallocr_set_min_buffer_size` /
   `ggml_backend_sched_set_min_buffer_size` (a buffer reserved larger than its graphs need),
   `ggml_gallocr_get_buffer` / `ggml_backend_sched_get_buffer`, and `ggml_backend_buffer_alias` (a
