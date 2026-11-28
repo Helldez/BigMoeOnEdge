@@ -490,26 +490,21 @@ int main() {
             {
                 MeasuredKnobs before;
                 before.device_cache_tps = 40.0;
-                before.host_call_tps = 41.0;
                 before.wide_decode_tps = 42.0;
                 before.shared_device_tps = 43.0;
                 MeasuredKnobs drafted = before;
-                KnobTrialConfig sides[5];
+                KnobTrialConfig sides[3];
                 sides[0].device_tier = 0;
-                sides[1].host_call_side = 0;
-                sides[2].width_side = 0;
-                sides[2].width_narrow = 512;
-                sides[3].shared_device_side = 0;
-                sides[4].host_call_side = 1;
+                sides[1].width_side = 0;
+                sides[1].width_narrow = 512;
+                sides[2].shared_device_side = 0;
                 for (const KnobTrialConfig & side : sides)
                     record_side_rate(side, 151.6, drafted, /*drafted*/ true);
-                check(
-                    drafted.device_cache_tps == 40.0 && drafted.no_device_cache_tps == 0.0 &&
-                        drafted.host_call_tps == 41.0 && drafted.no_host_call_tps == 0.0 &&
-                        drafted.wide_decode_tps == 42.0 && drafted.narrow_decode_tps == 0.0 &&
-                        drafted.shared_device_tps == 43.0 && drafted.no_shared_device_tps == 0.0 &&
-                        drafted.verdicts() == before.verdicts(),
-                    "record: a drafting load leaves the device tier's, host call's, width's and shared device's rates");
+                check(drafted.device_cache_tps == 40.0 && drafted.no_device_cache_tps == 0.0 &&
+                          drafted.wide_decode_tps == 42.0 && drafted.narrow_decode_tps == 0.0 &&
+                          drafted.shared_device_tps == 43.0 && drafted.no_shared_device_tps == 0.0 &&
+                          drafted.verdicts() == before.verdicts(),
+                      "record: a drafting load leaves the device tier's, width's and shared device's rates");
             }
             std::vector<MeasuredKnobs> kept = {dback[0]};
             MeasuredKnobs later;

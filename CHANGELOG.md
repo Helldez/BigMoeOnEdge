@@ -97,28 +97,13 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   The view now keeps the interface and frees nothing; elsewhere the misses are uploaded into the lent slots on the
   backend's queue, and gate G25g now runs that path. The plan still arms lending only on a device that shares the
   host's memory: on a card with memory of its own it is unmeasured.
-- **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
-  `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
-  ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.
-- **`--auto` decides the device cache's host call across loads.** Wherever a device expert cache serves, once
-  its decode is timed one load runs with the lookup inside the device's graph and times it, and the faster
-  side serves from then on (`--trial-host-call`, `host_call_tps` in the measured knobs). Measured +5% on a
-  12 GB CUDA card, slower on a unified-memory laptop, where the next load turns it off again.
-  With `--device-cache-cpu-threads`, a prompt whose experts' output is wider than the backend's host call
-  keeps the CPU part as a split: before, a CUDA server crashed on the first long prompt.
-
-- **A device expert cache that admits in the background** (`--device-cache-async-admit`, experimental).
-  With the lookup in the graph and the CPU-miss threads, every miss of a decoded token is computed by the
-  processor while the device computes the hits, and a miss enters the cache through a write made on a thread
-  of its own, only if it is used more than the expert it evicts (decayed use count): no layer waits for an
-  upload, and a miss used once no longer pushes out what keeps being used. On a 12 GB PCIe 3 card with
-  Qwen3.6-35B UD-Q4_K_XL: 52.2 -> 58.6 tok/s over 256 tokens, 48.3 -> 53.8 over 1024. The processor's
-  experts round differently from the device's, so the text is not the plain upload's. Off by default: on a
-  24 GB card where the cache already serves 97% of Flash-Next Q2_0's experts it was slower (68.8 vs 77.8).
-- **CUDA: a host call copies its mailbox 16 bytes per access.** The device read the host's reply a byte at
-  a time over the bus; a layer's CPU-miss output (64 KiB at 8 experts) cost more than computing the misses
-  saved, which is why every CPU share measured with the host call was slower. It now reads and writes the
-  mailbox in 16-byte accesses where both ends allow it.
+- **Two experimental device-cache parameters**: `--device-cache-fill-lanes` and `--device-cache-read-ahead`
+  ([settings.md](docs/settings.md)). Both lossless; the gates compare each with the plain upload.
+- **A gate for the device cache filled in place (G25h).** It runs the cache on a device whose memory the host
+  writes (found from what its backend exports, not from its name), with every background fill held back and its
+  slot set to ones until it lands (debug setting `--device-cache-fill-delay-us`), so a lookup that reads a slot
+  before its fill lands fails the gate; every answer must be the model held whole on that device, with the
+  cache lent to a wide prompt too.
 
 - **CUDA: a short row of a float matrix-vector product is one warp's.** Where a row fits a few warp loads,
   each row gets one warp and a block several rows, instead of one block per row and a block-wide
@@ -208,22 +193,22 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   context's memory with its data afterwards.
 
 ### Fixed
-- **The device cache's host-call lookup read slots its read-ahead had not filled yet.** The layer before
-  reads the next layer's experts ahead, in the background; the lookup made as a split waited for those
-  reads, the one made as a host call (the last layer at least) did not, so where every expert that layer
-  chose was a hit, one of them could be computed from a slot still holding another expert. On a
-  unified-memory laptop this flipped a token of a greedy answer in one run of many of the same command.
-  The host-call lookup now waits for them too. A new gate (G25h) runs the cache filled in place on a
-  device whose memory the host writes (found from what its backend exports, not from its name), with
-  every background fill held back and its slot set to ones until it lands (debug setting
-  `--device-cache-fill-delay-us`): without the fix the gate fails, with it every answer is the model held
-  whole on that device.
 - **A load that drafts no longer records its rate for another decision across loads.** A drafting load's
   tokens per second count the accepted drafts, and were recorded as the rate of whatever side the load
   served: on a rented 24 GB card an n-gram load recorded 151.6 tok/s for the file's mapping against 105.3
   for the experts' copy timed without drafts, and every load after turned the copy off and decoded
   30-40% slower. A load that drafts (`--mtp`, `--ngram`, a draft model) now times only the draft's own
-  side (`--trial-spec`), and the host call's rule waits for a load that does not draft.
+  side (`--trial-spec`).
+
+### Removed
+- **The device cache's lookup inside the graph (the host call) is gone, with the CPU-miss threads and the
+  background admission that needed it.** `--device-cache-host-call`, `--device-cache-cpu-threads`,
+  `--device-cache-async-admit` and `--trial-host-call` are removed, and so is the plan's rule that timed the
+  host call across loads; `host_call_tps` and `no_host_call_tps` in a measured-knobs record from an earlier
+  build are read past. It gained 5-10% on most CUDA cards but lost 12% on one 24 GB card and 8% on a
+  unified-memory laptop, for about 560 lines in the llama.cpp fork branch and the only new ggml core op
+  (`GGML_OP_HOST_CALL`). Every lookup is the split per layer again, which already waited for its read-ahead:
+  the slot-read race the host call had is gone with it.
 
 ## [0.50.1] - 2026-11-25
 

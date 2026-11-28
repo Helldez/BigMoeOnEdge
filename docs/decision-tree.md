@@ -559,7 +559,6 @@ flowchart TD
     plan_held_whole["<b>plan.held-whole</b><br/>Shared memory: hold the whole model on the device, streaming as the fallback"]
     plan_shared_cache["<b>plan.shared-cache</b><br/>Shared memory: a streamed model's experts computed on the device, from a cache filled in place [EXPERIMENTAL]"]
     plan_record_unstreamed["<b>plan.record-unstreamed</b><br/>A run that does not stream records its routing where no record exists"]
-    plan_host_call["<b>plan.host-call</b><br/>A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]"]
     plan_cache_warm["<b>plan.cache-warm</b><br/>A device expert cache warmed at load from the model's routing record [EXPERIMENTAL]"]
     plan_unplannable["<b>plan.unplannable</b><br/>Nothing to plan: unknown model, dense model, unknown memory"]
     plan_tier["<b>plan.tier</b><br/>Device memory as a tier of the expert cache"]
@@ -630,8 +629,7 @@ flowchart TD
     plan_backends -.-> plan_held_whole
     plan_held_whole -.-> plan_shared_cache
     plan_shared_cache -.-> plan_record_unstreamed
-    plan_record_unstreamed -.-> plan_host_call
-    plan_host_call -.-> plan_cache_warm
+    plan_record_unstreamed -.-> plan_cache_warm
     plan_cache_warm -.-> plan_unplannable
     plan_unplannable -.-> plan_tier
     plan_tier -.-> plan_width
@@ -827,23 +825,11 @@ flowchart TD
 - Only on a load that times nothing (no trial of any kind and no answer check): a rate measured beside
   the barriers would carry them. Until then the loads that time a side decide unpriced.
 
-#### `plan.host-call` — A device expert cache's lookup inside the device's graph, decided across loads [EXPERIMENTAL]
-- parent: —
-- code: `core/src/plan/planner.cpp` · `choose_host_call`
-- condition: `if (t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0) return;`
-- It runs last, on any plan with a device expert cache (`device_cache_mb > 0`), when neither
-  `device-cache-host-call` nor `trial-host-call` is pinned and no other cross-load side is timed.
-- The cache's side needs a rate first (`no_host_call_tps`, or `device_cache_tps`, timed without it).
-- Loads with it failed `unviable_max` times (`host_call_unviable`) → off.
-- `host_call_tps` not measured → on, `trial.host_call_side = 1`: the load times it; a load that drafts
-  (`spec.enabled()`) is left alone, since it times no side.
-- Both measured → the faster serves, and nothing is timed again.
-
 #### `plan.cache-warm` — A device expert cache warmed at load from the model's routing record [EXPERIMENTAL]
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_cache_warm`
 - condition: `if (c.moe.device_cache_mb <= 0 || m.hottest.empty() || !m.hit_curve.measured) return;`
-- Asked by `plan_run` after `plan.host-call`, on any plan with a device expert cache and a routing record
+- Asked by `plan_run` on any plan with a device expert cache and a routing record
   of the model's own (`ModelProfile::hottest`, `hottest_experts`). `device-cache-warm` pinned → the
   caller's, with the record's experts where it is on.
 - The cache lent to prompts (`device_cache_lend`) → off: a wide pass empties it before the first answer.
@@ -1235,7 +1221,7 @@ flowchart TD
 - code: `core/src/plan/planner.cpp` · `choose_spec`
 - condition: `if (all.empty() || !req.measure_knobs) return;`
 - condition: `} else if (!verify_reads_held(a.config, m, d, a.where)) {`
-- Asked by `plan_run` on the plan as it will serve, after `plan.host-call`. The model has a draft
+- Asked by `plan_run` on the plan as it will serve. The model has a draft
   (`draft_options`: its own MTP head, and a draft model the front-end paired with it,
   `ModelProfile::drafter`), the front-end keeps records, `spec`, `mtp-head` and `trial-spec` are
   not pinned, no draft is armed, and this load times no other side and checks no device's answers.
@@ -1901,8 +1887,7 @@ flowchart TD
 - The stages run in order, each when armed:
   1. threads (the incumbent and the candidates);
   2. overlap (both sides, when the hook exists);
-  3. rate, timing one side (`device_tier`, `width_side`, `shared_device_side`, `host_call_side` or
-     `spec_side`); on a load that drafts, only `spec_side` (`record_side_rate`).
+  3. rate, timing one side (`device_tier`, `width_side`, `shared_device_side` or `spec_side`); on a load that drafts, only `spec_side` (`record_side_rate`).
 - A cost probe always measures the plain decode cost (`req.trial`).
 - The side a load times is kept at what it decoded over its turns, less the rate probe's settling
   window, on every side alike: a side is compared once its cache is warm, not on the first touches of a

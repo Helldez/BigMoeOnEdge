@@ -161,16 +161,12 @@ on its own branch so the default pin can return to the hook branch unchanged.
   would not do: it covers only memory llama.cpp allocates itself, not the scheduler's compute buffers a
   lent cache, a wide pass's expert copies and the lookup's results live in, and among the device
   backends only Metal reports it.)
-- **`GGML_OP_HOST_CALL`**: a host function answered inside a graph (CPU inline, CUDA through a
-  mapped mailbox inside a captured graph, Metal through a shared event between graph segments).
-  The MoE cache's lookup can run as one, so a token is one graph instead of a split per layer.
 - **MoE cache**: `llama_set_moe_cache_fill` (misses written in place by a caller), `llama_moe_cache_warm`
   (free slots filled at load with given experts, hottest first, on the path the misses take; nothing
   evicted, stops where the cache is full: 58 lines), and
-  `llama_context_params::moe_cache_host_call`, `moe_cache_cpu_threads`, `moe_cache_read_ahead`
+  `llama_context_params::moe_cache_read_ahead`
   (for every batch the cache serves, predicted and filled ahead only where the host writes the cache in
-  place: elsewhere no prediction is built), `moe_cache_async_admit` (a small batch's misses on the CPU, admitted into the cache in the
-  background) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch; where the
+  place: elsewhere no prediction is built) and `moe_cache_lend` (the cache in the compute buffer, lent to a large batch; where the
   host does not write that memory in place the misses are uploaded into it on the backend's queue).
 - **Compute buffer room for a lent cache**: `ggml_gallocr_set_min_buffer_size` /
   `ggml_backend_sched_set_min_buffer_size` (a buffer reserved larger than its graphs need),
@@ -178,9 +174,8 @@ on its own branch so the default pin can return to the hook branch unchanged.
   weights-usage view of the compute buffer the banks are bound through, which keeps the viewed buffer's
   interface, since backends compare it to recognise their own buffers, and frees none of its memory).
 
-bmoe drives them through `RunConfig::moe.device_cache_fill_lanes`, `device_cache_host_call`,
-`device_cache_cpu_threads`, `device_cache_read_ahead`, `device_cache_async_admit`, `device_cache_lend` and
-`device_cache_warm`, and fills misses from the file with
+bmoe drives them through `RunConfig::moe.device_cache_fill_lanes`, `device_cache_read_ahead`,
+`device_cache_lend` and `device_cache_warm`, and fills misses from the file with
 `core/src/moe/cache_fill.cpp`. Sunset: dropped with the branch if the levers do not earn a place.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)

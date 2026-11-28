@@ -64,7 +64,6 @@ constexpr UnviableSide k_unviable_sides[] = {{"device_cache", &MeasuredKnobs::de
                                              {"narrow", &MeasuredKnobs::narrow_unviable},
                                              {"shared_device", &MeasuredKnobs::shared_device_unviable},
                                              {"no_shared_device", &MeasuredKnobs::no_shared_device_unviable},
-                                             {"host_call", &MeasuredKnobs::host_call_unviable},
                                              {"spec", &MeasuredKnobs::spec_unviable},
                                              {"no_spec", &MeasuredKnobs::no_spec_unviable},
                                              {"drafter", &MeasuredKnobs::drafter_unviable}};
@@ -197,13 +196,6 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             out += std::string(" shared_device_prompt_tps=") + num;
             std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_prompt_tps);
             out += std::string(" no_shared_device_prompt_tps=") + num;
-        }
-        // The host call's two sides: later keys still, written once a load timed one.
-        if (r.host_call_tps > 0.0 || r.no_host_call_tps > 0.0) {
-            std::snprintf(num, sizeof(num), "%.3f", r.host_call_tps);
-            out += std::string(" host_call_tps=") + num;
-            std::snprintf(num, sizeof(num), "%.3f", r.no_host_call_tps);
-            out += std::string(" no_host_call_tps=") + num;
         }
         // The last warm of a device expert cache: later keys still, written once a load warmed one.
         if (r.warm_experts > 0) {
@@ -343,10 +335,6 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_int(r.warm_experts);
             else if (k == "warm_s")
                 ok = as_double(r.warm_s);
-            else if (k == "host_call_tps")
-                ok = as_double(r.host_call_tps);
-            else if (k == "no_host_call_tps")
-                ok = as_double(r.no_host_call_tps);
             else if (k == "spec_tps")
                 ok = as_double(r.spec_tps);
             else if (k == "no_spec_tps")
@@ -430,11 +418,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 || r.mix_requests < 0 ||
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
             !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
-            !(r.no_shared_device_prompt_tps >= 0.0) || !(r.host_call_tps >= 0.0) || !(r.no_host_call_tps >= 0.0) ||
-            r.warm_experts < 0 || !(r.warm_s >= 0.0) || !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) ||
-            !(r.drafter_tps >= 0.0) || !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) ||
-            !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) || r.spec_draft < 0 ||
-            r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
+            !(r.no_shared_device_prompt_tps >= 0.0) || r.warm_experts < 0 || !(r.warm_s >= 0.0) ||
+            !(r.spec_tps >= 0.0) || !(r.no_spec_tps >= 0.0) || !(r.drafter_tps >= 0.0) ||
+            !(r.spec_accept >= 0.0 && r.spec_accept <= 1.0) || !(r.drafter_accept >= 0.0 && r.drafter_accept <= 1.0) ||
+            r.spec_draft < 0 || r.spec_draft > SpecConfig::draft_max_limit || r.drafter_draft < 0 ||
             r.drafter_draft > SpecConfig::draft_max_limit) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
@@ -483,9 +470,6 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             if (rec.no_shared_device_tps > 0.0) r.no_shared_device_tps = rec.no_shared_device_tps;
             if (rec.shared_device_prompt_tps > 0.0) r.shared_device_prompt_tps = rec.shared_device_prompt_tps;
             if (rec.no_shared_device_prompt_tps > 0.0) r.no_shared_device_prompt_tps = rec.no_shared_device_prompt_tps;
-            merge_unviable(r.host_call_unviable, rec.host_call_unviable, r.host_call_tps, rec.host_call_tps);
-            if (rec.host_call_tps > 0.0) r.host_call_tps = rec.host_call_tps;
-            if (rec.no_host_call_tps > 0.0) r.no_host_call_tps = rec.no_host_call_tps;
             if (rec.warm_experts > 0) {
                 r.warm_experts = rec.warm_experts;
                 r.warm_s = rec.warm_s;
@@ -590,9 +574,6 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
         (trial.shared_device_side == 1 ? rec.shared_device_tps : rec.no_shared_device_tps) = tokens_per_second;
         (trial.shared_device_side == 1 ? rec.shared_device_unviable : rec.no_shared_device_unviable) = 0;
         if (trial.shared_device_side == 1) rec.shared_device_unviable_free_mib = 0;
-    } else if (trial.host_call_side >= 0) {
-        (trial.host_call_side == 1 ? rec.host_call_tps : rec.no_host_call_tps) = tokens_per_second;
-        if (trial.host_call_side == 1) rec.host_call_unviable = 0;
     } else if (trial.spec_side >= 0) {
         *spec_rate(trial.spec_side, rec) = tokens_per_second;
         *spec_unviable(trial.spec_side, rec) = 0;
@@ -616,14 +597,12 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
     if (trial.width_side >= 0) return trial.width_side == 1 ? &rec.wide_unviable : &rec.narrow_unviable;
     if (trial.shared_device_side >= 0)
         return trial.shared_device_side == 1 ? &rec.shared_device_unviable : &rec.no_shared_device_unviable;
-    if (trial.host_call_side == 1) return &rec.host_call_unviable;
     if (trial.spec_side >= 0) return spec_unviable(trial.spec_side, rec);
     return nullptr;
 }
 
 bool names_side(const KnobTrialConfig & trial) {
-    return trial.device_tier >= 0 || trial.width_side >= 0 || trial.shared_device_side >= 0 ||
-           trial.host_call_side >= 0 || trial.spec_side >= 0;
+    return trial.device_tier >= 0 || trial.width_side >= 0 || trial.shared_device_side >= 0 || trial.spec_side >= 0;
 }
 
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec) {

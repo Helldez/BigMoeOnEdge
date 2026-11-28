@@ -550,14 +550,13 @@ on a machine whose device reads that same memory, on the cores or every layer on
 (`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
 `no_shared_device_prompt_tps` the load that compared the answers timed,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), and
-whether a device expert cache looks its experts up inside the device's graph (`host_call_tps`,
-`no_host_call_tps`; the cache's own `device_cache_tps` stands for the side without it until that side is
-timed again), tried once the cache's decode has a rate, and
 whether and with which draft a model drafts (`spec_tps` for its own head, `drafter_tps` for a paired draft
 model, `no_spec_tps` without; each draft's acceptance and width, `spec_accept`/`spec_draft`,
 `drafter_accept`/`drafter_draft`, which the plan prices its other widths from; the draft context
 being created with the target's,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+A record from an earlier build may also hold `host_call_tps` and `no_host_call_tps`, from a lookup inside
+the device's graph that is gone; they are read past.
 
 The record also keeps what the last warm of a device expert cache cost (`warm_experts`, `warm_s`), not a
 side but the rate the next plan prices a warm at

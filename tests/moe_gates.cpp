@@ -2031,10 +2031,10 @@ int main(int argc, char ** argv) {
     // G25h — the device cache on a device whose memory the host writes in place (unified memory: its
     // backend exports "ggml_backend_buffer_get_host_base", a capability, never a device's name), the one
     // path the RPC gate device cannot take: misses read from the file into the slots on fill lanes, the
-    // next layer read ahead in the background, the last layer's lookup a host call. Every background
-    // fill first sets its slot to ones and is held back (device_cache_fill_delay_us), so a lookup that
-    // reads a slot before its fill lands computes garbage; each run must give the bytes of the model
-    // held whole on that device. a) splits, b) host call, c) host call and the cache lent to a prompt.
+    // next layer read ahead in the background. Every background fill first sets its slot to ones and is
+    // held back (device_cache_fill_delay_us), so a lookup that reads a slot before its fill lands
+    // computes garbage; each run must give the bytes of the model held whole on that device.
+    // a) the cache filled in place and read ahead, c) the same lent to a wide prompt.
     {
         std::string dev_name;
         for (size_t i = 0; i < ggml_backend_dev_count() && dev_name.empty(); ++i) {
@@ -2069,21 +2069,18 @@ int main(int argc, char ** argv) {
             filled.moe.device_cache_fill_lanes = 2;
             filled.moe.device_cache_read_ahead = 2;
             filled.moe.device_cache_fill_delay_us = 5000;
-            RunConfig filled_hc = filled;
-            filled_hc.moe.device_cache_host_call = true;
-            RunConfig filled_lend = filled_hc;
+            RunConfig filled_lend = filled;
             filled_lend.prompt = wide_prompt;
             filled_lend.n_ubatch = 128;
             filled_lend.moe.device_cache_lend = true;
 
-            std::string s_whole, s_whole_w, s_a, s_b, s_c;
+            std::string s_whole, s_whole_w, s_a, s_c;
             if (!gen(whole, s_whole, err) || !gen(whole_w, s_whole_w, err) || !gen(filled, s_a, err) ||
-                !gen(filled_hc, s_b, err) || !gen(filled_lend, s_c, err)) {
+                !gen(filled_lend, s_c, err)) {
                 std::printf("[FAIL] G25h a run on %s failed: %s\n", dev_name.c_str(), err.c_str());
                 ++fails;
             } else {
                 fails += check("G25h a) device cache filled in place, read ahead == model held whole", s_whole, s_a);
-                fails += check("G25h b) the same with host calls == model held whole", s_whole, s_b);
                 fails += check("G25h c) the same lent to a wide prompt == model held whole", s_whole_w, s_c);
                 // d) warmed at load, in place, with more experts than it holds, then read ahead as in a).
                 RunConfig filled_warm = filled;
