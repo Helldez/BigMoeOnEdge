@@ -4,7 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased] - experimental, not for release
+## [0.51.0] - 2026-11-28
+
+Experimental pre-release (`v0.51.0-exp.1`), built from the `rc-lossless-exp` branch, not from `main`. It
+pins the llama.cpp submodule to a branch of the project's fork that goes beyond the single small commit
+the project allows (hard rule 1), so it is published as a pre-release for testing only. Its contents are
+the open PRs #741, #749, #751, #755, #756 and #754; the entries below are theirs.
+
+### Experimental
 
 This section belongs to an experimental change that pins the llama.cpp submodule to its own fork
 branch (`bmoe/moe-cache-exp-2611`, and `bmoe/lossless-cache-2811` on top of it, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
