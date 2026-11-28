@@ -52,7 +52,11 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   its misses take. It does so where the record says the cold misses are first touches and the fill
   costs no more than they would, priced at the last warm's measured rate. Not where the cache is lent
   to prompts. The side a load is kept at now leaves out the rate probe's settling window on every side,
-  so a cold cache is not weighed against a warm placement. New gates: G25w (warmed, over the RPC
+  so a cold cache is not weighed against a warm placement. A load that drafts times no side but the
+  draft's own: on the same card a load with a draft model had timed the host call at 151.6 tok/s
+  against 111.2 without a draft, and every n-gram load after served it, at 71.8 against 117.9.
+  Under any draft the lookup and the warm are now the plain run's, and the saving a warm is weighed by is
+  never priced below the fill's measured rate (one slow fill had turned it off). New gates: G25w (warmed, over the RPC
   device) and G25h d) (warmed in place) are identical to the resident model
   ([hardware-planning.md](docs/hardware-planning.md#a-device-expert-cache-warmed-at-load)).
 - **A streamed model computed on a device that shares the host's memory.** On a unified-memory

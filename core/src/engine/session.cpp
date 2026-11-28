@@ -2512,6 +2512,13 @@ void Session::Impl::arm_trials() {
     }
     trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0 ||
                   t.spec_side >= 0;
+    // A load that drafts, other than the one timing the draft's own side, times no side: what it decodes
+    // at is the draft's rate as much as the side's, and the side's other half was timed without a draft
+    // (the plan's untimed_under_draft says why; this keeps a side set by hand from being recorded too).
+    if (trials.rate && cfg.spec.enabled() && t.spec_side < 0) {
+        trials.rate = false;
+        log_printf(LogLevel::Info, "knob trial: no side is timed on a load that drafts (%s)", cfg.spec.source_name());
+    }
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }

@@ -4714,6 +4714,9 @@ void choose_host_call(Plan & p, const ModelProfile & m, const PlanRequest & req)
     // The rate without it: its own side's, or the cache's, which was timed without it.
     const double off = mk.no_host_call_tps > 0.0 ? mk.no_host_call_tps : mk.device_cache_tps;
     if (off <= 0.0) return;
+    // A load that drafts times no side (untimed_under_draft): the lookup a plain load serves, until a
+    // load without a draft has timed the other.
+    if (c.spec.enabled() && mk.host_call_tps <= 0.0 && !lost(mk.host_call_unviable)) return;
     Decision d;
     d.knob = "device-cache-host-call";
     char rates[160];
@@ -5478,9 +5481,9 @@ void choose_record_unstreamed(Plan & p, const ModelProfile & m, const PlanReques
 // no more than they do:
 // - what a warm holds: the hottest experts the cache's bytes take;
 // - what it saves: those bytes on the miss path (an upload to a card, the file into a shared device's
-//   slots), at the share of the record's cold misses at this cache that are first touches (its decoded
-//   experts' bytes over its missed bytes, capped at 1; an upper bound, since some were first seen in the
-//   prompt);
+//   slots), never priced below the fill's own rate per byte, at the share of the record's cold misses at this cache
+//   that are first touches (its decoded experts' bytes over its missed bytes, capped at 1; an upper bound, since some
+//   were first seen in the prompt);
 // - what it costs: the same bytes at the rate the last warm here filled them (MeasuredKnobs::warm_s), or
 //   on the miss path itself before any. The two are the same bytes on the same path, so a fill priced
 //   inside the margin of what it saves is taken: it moves them out of the steps.
@@ -5526,18 +5529,24 @@ void choose_cache_warm(
     const double missed = (1.0 - m.hit_curve.hit_share(cache)) * (double) m.hit_curve.decode_tokens * routed;
     const double set = (double) m.hottest.cum_bytes.back();
     const double first = missed > 0.0 ? std::min(1.0, set / missed) : 1.0;
-    const double saved_s = (double) held * first * miss_path;
     const MeasuredKnobs & mk = m.knobs;
-    double fill_s = (double) held * miss_path;
+    double fill_per_byte = miss_path;
     bool measured = false;
     if (mk.warm_experts > 0 && mk.warm_s > 0.0) {
         const size_t k = std::min((size_t) mk.warm_experts, m.hottest.cum_bytes.size());
         const double bytes = (double) m.hottest.cum_bytes[k - 1];
         if (bytes > 0.0) {
-            fill_s = (double) held * mk.warm_s / bytes;
+            fill_per_byte = mk.warm_s / bytes;
             measured = true;
         }
     }
+    // A miss inside a step moves the same bytes from the same place as the fill, one layer's experts at a
+    // time and with the step waiting, so it costs at least what the fill measured per byte. A fill
+    // measured slower than the probed miss path says the path was slower on that load, not that the
+    // fill costs more than the misses: on a rented 32 GB card one load filled the same 10844 experts in
+    // 1.60 s where three before had taken 0.76-0.92, and the plan after turned the warm off.
+    const double fill_s = (double) held * fill_per_byte;
+    const double saved_s = (double) held * first * std::max(miss_path, fill_per_byte);
     const bool warm = fill_s <= saved_s * (1.0 + (double) pol.min_backend_win);
     char nums[400];
     std::snprintf(nums, sizeof(nums),
@@ -5568,6 +5577,33 @@ Plan plan_run_placed(const RunConfig & base,
                      const PlanRequest & req,
                      const PlannerPolicy & pol);
 
+// ── no side across loads timed under a draft the caller set ──
+// A load that drafts decodes 1 + draft positions a step and keeps the tokens its drafts win, so the rate
+// it decodes at is the draft's as much as any side's, and a side timed on it is read against the same
+// side timed on loads without one. On a rented 32 GB card a load with a draft model timed the device
+// cache's lookup inside the graph at 151.6 tok/s, against 111.2 for the cache timed without a draft;
+// every load after served that lookup, an n-gram one too, at 71.8 tok/s where the plain lookup had
+// decoded 117.9. So under a draft the caller set, each decision serves what it decided and times
+// nothing; its sides are timed by the loads that do not draft. The draft's own trial (plan.spec) arms
+// a draft only on the load that times it, and no other side then.
+void untimed_under_draft(Plan & p) {
+    KnobTrialConfig & t = p.config.trial;
+    // dt:plan.draft-untimed
+    if (!p.config.spec.enabled() || t.spec_side >= 0) return;
+    if (t.device_tier < 0 && t.width_side < 0 && t.shared_device_side < 0 && t.host_call_side < 0) return;
+    t.device_tier = t.width_side = t.shared_device_side = t.host_call_side = -1;
+    Decision d;
+    d.knob = "knob-trial";
+    d.value = "none";
+    d.source = Source::Policy;
+    d.brief = "This load drafts, so it times no other setting: a load without a draft does.";
+    d.reason = std::string("the ") + p.config.spec.source_name() +
+               " draft makes a step decode several positions and keeps what the drafts win, so what this load "
+               "decodes at is the draft's rate as much as a setting's; each decision above serves as it decided, and "
+               "the loads that do not draft time their sides";
+    p.decisions.push_back(std::move(d));
+}
+
 } // namespace
 
 Plan plan_run(const RunConfig & base,
@@ -5578,6 +5614,7 @@ Plan plan_run(const RunConfig & base,
               const PlannerPolicy & pol) {
     Plan p = plan_run_placed(base, hw, model, projected, req, pol);
     choose_host_call(p, model, req);
+    untimed_under_draft(p);
     choose_cache_warm(p, hw, model, req, pol);
     choose_spec(p, base, hw, model, projected, req, pol);
     choose_record_unstreamed(p, model, req);

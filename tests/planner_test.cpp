@@ -16,6 +16,7 @@
 #include "bmoe/allocate.h"
 #include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 #include "bmoe/routing.h"
@@ -4301,14 +4302,36 @@ int main() {
             check(!size.config.moe.device_cache_warm && !size.config.moe.device_cache_warm_experts && dw &&
                       dw->value == "off",
                   "cache warm: misses of a cache too small for its routing, no warm", dw ? dw->reason : "none");
-            // The last warm here filled far slower than the misses' path: its measured rate decides.
+            // The last warm here filled far slower than the probed miss path: the misses move the same bytes
+            // from the same place, so they would have cost that too, and the warm stays.
             ModelProfile slow = touches;
             slow.knobs.warm_experts = 100;
             slow.knobs.warm_s = 60.0;
             const Plan sl = plan_run(base_cfg(), card, slow, half, PlanRequest{}, PlannerPolicy::defaults());
             dw = find(sl, "device-cache-warm");
-            check(!sl.config.moe.device_cache_warm && dw && dw->source == Source::Measured,
-                  "cache warm: a fill measured slower than what it saves is not made", dw ? dw->reason : "none");
+            check(sl.config.moe.device_cache_warm && dw && dw->source == Source::Measured,
+                  "cache warm: first touches, a fill measured slower than the probed misses still made",
+                  dw ? dw->reason : "none");
+            // Half of the cold misses first touches: the fill pays for all its bytes and saves half, unless it
+            // was measured cheaper than the misses' path.
+            const ModelProfile part = with_record(0.98, (uint64_t) (0.02 * 256 * (double) routed / 2));
+            const Plan pa = plan_run(base_cfg(), card, part, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(pa, "device-cache-warm");
+            check(!pa.config.moe.device_cache_warm && dw && dw->value == "off",
+                  "cache warm: half the misses first touches, priced on their path: no warm", dw ? dw->reason : "none");
+            ModelProfile part_slow = part;
+            part_slow.knobs.warm_experts = 100;
+            part_slow.knobs.warm_s = 60.0;
+            const Plan ps = plan_run(base_cfg(), card, part_slow, half, PlanRequest{}, PlannerPolicy::defaults());
+            check(!ps.config.moe.device_cache_warm, "cache warm: half the misses first touches, a slow fill: no warm");
+            ModelProfile part_fast = part;
+            part_fast.knobs.warm_experts = (int) part.hottest.cum_bytes.size();
+            part_fast.knobs.warm_s = 1e-6;
+            const Plan pf = plan_run(base_cfg(), card, part_fast, half, PlanRequest{}, PlannerPolicy::defaults());
+            dw = find(pf, "device-cache-warm");
+            check(pf.config.moe.device_cache_warm && dw && dw->source == Source::Measured,
+                  "cache warm: half the misses first touches, a fill measured cheaper than them: warmed",
+                  dw ? dw->reason : "none");
             // A cache lent to a prompt empties before the first answer.
             RunConfig lend = base_cfg();
             lend.moe.device_cache_lend = true;
@@ -4326,6 +4349,19 @@ int main() {
             check(pi.config.moe.device_cache_warm && pi.config.moe.device_cache_warm_experts == capacity.hottest.keys &&
                       !find(pi, "device-cache-warm"),
                   "cache warm: pinned on, the record's experts are what it warms with");
+            // A draft armed by the caller changes neither: each draft source warms as the plain run does.
+            for (DraftSource src : {DraftSource::ngram, DraftSource::mtp, DraftSource::drafter}) {
+                RunConfig drafted = base_cfg();
+                drafted.spec.source = src;
+                drafted.spec.draft_max = 3;
+                PlanRequest typed;
+                typed.pinned = {"spec"};
+                const Plan dp = plan_run(drafted, card, touches, half, typed, PlannerPolicy::defaults());
+                dw = find(dp, "device-cache-warm");
+                check(dp.config.moe.device_cache_mb > 0 && dp.config.moe.device_cache_warm && dw && dw->value == "on",
+                      std::string("cache warm: under a ") + drafted.spec.source_name() + " draft, warmed as plain",
+                      dw ? dw->reason : "no decision, cache " + std::to_string(dp.config.moe.device_cache_mb));
+            }
             // No record: nothing to warm with, and nothing said.
             const Plan none = plan_run(base_cfg(), card, model, half, PlanRequest{}, PlannerPolicy::defaults());
             check(!none.config.moe.device_cache_warm && !find(none, "device-cache-warm"),
@@ -4521,6 +4557,44 @@ int main() {
                 // A load still timing the cache's own side leaves the lookup alone.
                 check(!tier.config.moe.device_cache_host_call && tier.config.trial.host_call_side == -1,
                       "host call, the device tier still timed: one trial at a time");
+                // A load that drafts times no side: it looks up as a plain load does, until a load without a
+                // draft has timed the other side; a side measured serves under any draft.
+                for (DraftSource src : {DraftSource::ngram, DraftSource::mtp, DraftSource::drafter}) {
+                    RunConfig drafted = base_cfg();
+                    drafted.spec.source = src;
+                    drafted.spec.draft_max = 3;
+                    PlanRequest typed;
+                    typed.pinned = {"spec"};
+                    MeasuredKnobs plain;
+                    plain.device_cache_tps = 20.0;
+                    ModelProfile mm = model;
+                    mm.knobs = plain;
+                    const Plan dr = plan_run(drafted, slow_cores, mm, half, typed, PlannerPolicy::defaults());
+                    check(dr.config.moe.device_cache_mb > 0 && !dr.config.moe.device_cache_host_call &&
+                              !names_side(dr.config.trial) && !find(dr, "device-cache-host-call"),
+                          std::string("host call, under a ") + drafted.spec.source_name() +
+                              " draft: the plain lookup, nothing timed");
+                    mm.knobs.host_call_tps = 21.0;
+                    const Plan measured = plan_run(drafted, slow_cores, mm, half, typed, PlannerPolicy::defaults());
+                    check(measured.config.moe.device_cache_host_call && !names_side(measured.config.trial),
+                          std::string("host call, under a ") + drafted.spec.source_name() +
+                              " draft: the measured side serves");
+                }
+            }
+            // Nothing measured, under a draft the caller set: the device tier serves what it priced, untimed,
+            // and the plan says why.
+            {
+                RunConfig drafted = base_cfg();
+                drafted.spec.source = DraftSource::ngram;
+                drafted.spec.draft_max = 3;
+                PlanRequest typed;
+                typed.pinned = {"spec"};
+                const Plan dr = plan_run(drafted, slow_cores, model, half, typed, PlannerPolicy::defaults());
+                const Decision * kt = find(dr, "knob-trial");
+                check(dr.config.moe.device_cache_mb == tier.config.moe.device_cache_mb &&
+                          !names_side(dr.config.trial) && kt && kt->value == "none",
+                      "device tier, under a draft: served as priced, no side timed",
+                      kt ? kt->reason : "no knob-trial decision");
             }
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;

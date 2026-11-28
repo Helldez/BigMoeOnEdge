@@ -1356,12 +1356,20 @@ path its misses take: an upload to a card, the file into the slots where the hos
 It does so where the record says the cold misses are first touches and the fill costs no more than
 they would:
 - **what a warm holds:** the hottest whole experts the cache's bytes take;
-- **what it saves:** those bytes on the miss path, at the share of the record's cold misses at this
-  cache that are first touches. That share is the record's decoded experts' bytes over its missed
+- **what it saves:** those bytes on the miss path, never priced below the fill's own measured rate per
+  byte, at the share of the record's cold misses at this cache that are first touches. That share is the record's decoded experts' bytes over its missed
   bytes, capped at 1, and is an upper bound, since some were first seen in the prompt;
 - **what it costs:** the same bytes at the rate the last warm here filled them (`MeasuredKnobs::warm_experts`,
   `warm_s`), or on the miss path itself before any warm. They are the same bytes on the same path, so a
   fill priced inside the margin of what it saves is taken: it moves them out of the steps.
+
+A miss inside a step moves the same bytes from the same place as the fill, a layer at a time with the
+step waiting, so it costs at least what the fill measured per byte. A fill measured slower than the
+probed miss path says the path was slower on that load, not that the fill costs more than the misses.
+On the 32 GB card, one load filled the same 10844 experts in 1.60 s where three before had taken
+0.76-0.92 s. The rule then turned the warm off for every load after it.
+The warm now depends on the share of first touches, and on the fill only where it was measured cheaper
+than the misses.
 
 The cache is not warmed where it is lent to a prompt's wide passes, which empty it before the first
 answer, and not without a record: there is nothing to warm with. A load that serves the device cache
@@ -1370,7 +1378,8 @@ cold, and the next plan warms. The load that times the cache's side is warmed li
 every side the rate a load is kept at leaves out the probe's settling window, so a cold cache's first
 touches are not weighed against a placement that has none. Before this, a warm fitter's placement at
 96-108 tok/s was compared with a cold cache at 88-91, and the fitter's placement was kept. The host
-call stays its own decision across loads, on that side (`plan.host-call`).
+call stays its own decision across loads, on that side (`plan.host-call`), timed only by a load that
+does not draft: a load with a draft serves the lookup a plain load serves.
 
 ### A streamed model on a device that shares memory
 

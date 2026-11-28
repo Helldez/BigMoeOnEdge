@@ -565,6 +565,14 @@ side but the rate the next plan prices a warm at
 times, it is kept at what it decoded less the rate probe's settling window, so both sides are compared once
 their cache is warm.
 
+A load that drafts times no side but the draft's own (`untimed_under_draft`, and the session refuses a
+side set by hand on such a load). A step under a draft decodes 1 + draft positions and keeps what the
+drafts win, so its rate is the draft's as much as the side's. On a rented 32 GB card a load with a draft
+model timed the device cache's lookup inside the graph at 151.6 tok/s, against 111.2 for the cache
+timed without a draft, and every load after served that lookup: an n-gram load decoded at 71.8 where the
+plain lookup had decoded 117.9. Under a draft the caller set, each decision serves as it decided, and
+the loads that do not draft time its sides.
+
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
 word per device). The load that moves the model compares them before it serves and reopens on the

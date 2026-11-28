@@ -2277,6 +2277,29 @@ int main(int argc, char ** argv) {
                                 std::printf("[PASS] %s: %.1f tok/s in the record\n", what.c_str(), tps);
                             }
                         }
+                        // The cache's side armed on a load that drafts: what it decodes at is the draft's as
+                        // much as the side's, so nothing goes in the record; the answer stays the target's.
+                        RunConfig drafting = cached;
+                        drafting.n_predict = ref_t.n_predict;
+                        drafting.spec.source = DraftSource::ngram;
+                        drafting.trial.device_tier = 1;
+                        drafting.trial.window_tokens = 2;
+                        const RunResult rd = run(drafting);
+                        if (!rd) {
+                            std::printf("[FAIL] G25e a timed side under a draft: the run failed: %s\n",
+                                        rd.error.c_str());
+                            ++fails;
+                        } else {
+                            fails += check("G25e a side under an n-gram draft == resident experts", s_ref_t,
+                                           rd.generated_text);
+                            if (rd.knobs.device_cache_tps > 0.0) {
+                                std::printf("[FAIL] G25e a side under a draft: %.1f tok/s went in the record\n",
+                                            rd.knobs.device_cache_tps);
+                                ++fails;
+                            } else {
+                                std::printf("[PASS] G25e a side under a draft: no rate in the record\n");
+                            }
+                        }
                     }
                 }
             }
