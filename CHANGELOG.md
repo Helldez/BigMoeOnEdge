@@ -7,7 +7,7 @@ Semantic Versioning.
 ## [Unreleased] - experimental, not for release
 
 This section belongs to an experimental change that pins the llama.cpp submodule to its own fork
-branch (`bmoe/moe-cache-exp-2611`, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
+branch (`bmoe/moe-cache-exp-2611`, and `bmoe/lossless-cache-2811` on top of it, [seam.md](docs/seam.md#3c-device-expert-cache-levers-experimental-fork-branch)):
 it touches llama.cpp beyond the single small commit the project allows, and is not meant to ship as is.
 
 ### Added
@@ -23,28 +23,40 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   A long prompt's experts outside the cache are filled on the same lanes: a 3022-token prompt prefilled
   at 268 tok/s on Qwen3.6-35B (59 before, 538 streamed with the prefill device); the plan does not weigh
   the prefill yet.
-- **Four experimental device-cache parameters**: `--device-cache-fill-lanes`,
-  `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
-  ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.
-- **`--auto` decides the device cache's host call across loads.** Wherever a device expert cache serves, once
-  its decode is timed one load runs with the lookup inside the device's graph and times it, and the faster
-  side serves from then on (`--trial-host-call`, `host_call_tps` in the measured knobs). Measured +5% on a
-  12 GB CUDA card, slower on a unified-memory laptop, where the next load turns it off again.
-  With `--device-cache-cpu-threads`, a prompt whose experts' output is wider than the backend's host call
-  keeps the CPU part as a split: before, a CUDA server crashed on the first long prompt.
-
-- **A device expert cache that admits in the background** (`--device-cache-async-admit`, experimental).
-  With the lookup in the graph and the CPU-miss threads, every miss of a decoded token is computed by the
-  processor while the device computes the hits, and a miss enters the cache through a write made on a thread
-  of its own, only if it is used more than the expert it evicts (decayed use count): no layer waits for an
-  upload, and a miss used once no longer pushes out what keeps being used. On a 12 GB PCIe 3 card with
-  Qwen3.6-35B UD-Q4_K_XL: 52.2 -> 58.6 tok/s over 256 tokens, 48.3 -> 53.8 over 1024. The processor's
-  experts round differently from the device's, so the text is not the plain upload's. Off by default: on a
-  24 GB card where the cache already serves 97% of Flash-Next Q2_0's experts it was slower (68.8 vs 77.8).
-- **CUDA: a host call copies its mailbox 16 bytes per access.** The device read the host's reply a byte at
-  a time over the bus; a layer's CPU-miss output (64 KiB at 8 experts) cost more than computing the misses
-  saved, which is why every CPU share measured with the host call was slower. It now reads and writes the
-  mailbox in 16-byte accesses where both ends allow it.
+- **The device cache reads ahead for a draft's verify batch too.** The next layer's experts were read
+  ahead only for one-token batches, so under `--mtp` (2-4 tokens per decode) nothing was. Every batch the
+  cache serves now predicts each token's experts and fills their union, best rank first. On a 16 GB laptop
+  with Qwen3.6-35B the small-batch hit rate went from 92.3 to 94.0% (draft 1) and from 91.3 to 93.7%
+  (draft 3), the time spent filling misses fell by a fifth to a quarter, and the text is identical.
+- **A long prompt in one pass on a device that shares memory, the decode's cache untouched.** Where the device
+  cache serves a streamed model, every pass of a prompt re-reads each expert the cache does not hold, yet the
+  passes were held to 1024 tokens to keep the compute buffers small. `--auto` now lends the cache to the prompt
+  (`--device-cache-lend`, experimental): its slots live in the compute buffer past what the answer uses, a wide
+  pass takes that memory and the cache refills after, and the pass is as wide as that memory allows. On a 16 GB
+  laptop with Qwen3.6-35B a 2959-token prompt prefilled at 367 tok/s instead of 215 (first token 15.8 s instead
+  of 21.4), the decode unchanged and the text identical
+  ([hardware-planning.md](docs/hardware-planning.md#a-streamed-model-on-a-device-that-shares-memory)).
+- **Fixed: the device cache's read-ahead on two kinds of model.** A model whose experts read a latent input
+  narrower than the router's aborted when read-ahead was on, and a model whose layers run the same experts
+  (looped blocks) changed its answer; the gates had no case with read-ahead. Read-ahead now skips both, fills
+  ahead only where the cache is filled in place (its upload queue for other devices is gone: it measured slower
+  over PCIe and changed a looped model's answer), and two gates cover it (G25f with speculation, G25g with the
+  cache lent to a wide prompt). `--device-cache-fill-lanes` and `--device-cache-read-ahead` typed by hand are no
+  longer overwritten by `--auto`.
+- **The cache lent on any device.** Lending the device cache to a wide prompt was refused where the host does not
+  write the device's memory in place, because a remote device's server crashed on it. The cause was the view of the
+  compute buffer the lent cache lives in: it dropped the buffer's free function, which the RPC and CUDA backends
+  compare to recognise their own buffers, so the remote side received the cache's slots as belonging to no buffer.
+  The view now keeps the interface and frees nothing; elsewhere the misses are uploaded into the lent slots on the
+  backend's queue, and gate G25g now runs that path. The plan still arms lending only on a device that shares the
+  host's memory: on a card with memory of its own it is unmeasured.
+- **Two experimental device-cache parameters**: `--device-cache-fill-lanes` and `--device-cache-read-ahead`
+  ([settings.md](docs/settings.md)). Both lossless; the gates compare each with the plain upload.
+- **A gate for the device cache filled in place (G25h).** It runs the cache on a device whose memory the host
+  writes (found from what its backend exports, not from its name), with every background fill held back and its
+  slot set to ones until it lands (debug setting `--device-cache-fill-delay-us`), so a lookup that reads a slot
+  before its fill lands fails the gate; every answer must be the model held whole on that device, with the
+  cache lent to a wide prompt too.
 
 - **CUDA: a short row of a float matrix-vector product is one warp's.** Where a row fits a few warp loads,
   each row gets one warp and a block several rows, instead of one block per row and a block-wide
@@ -61,9 +73,25 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
 
 ### Changed
+- **Smaller llama.cpp footprint for the device cache, the same behaviour.** The host address of device memory
+  the host writes in place is now a function a backend exports through its registry
+  (`ggml_backend_reg_get_proc_address`), not a new member of every ggml buffer interface: ggml's core headers
+  and the backends that have no such memory are untouched. The read-ahead builds no prediction where it fills
+  nothing ahead (a card with memory of its own), instead of paying the next router's product per layer for
+  statistics. The cache's lend flag for llama.cpp's own tools is gone (bmoe sets it directly).
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
   context's memory with its data afterwards.
+
+### Removed
+- **The device cache's lookup inside the graph (the host call) is gone, with the CPU-miss threads and the
+  background admission that needed it.** `--device-cache-host-call`, `--device-cache-cpu-threads`,
+  `--device-cache-async-admit` and `--trial-host-call` are removed, and so is the plan's rule that timed the
+  host call across loads; `host_call_tps` and `no_host_call_tps` in a measured-knobs record from an earlier
+  build are read past. It gained 5-10% on most CUDA cards but lost 12% on one 24 GB card and 8% on a
+  unified-memory laptop, for about 560 lines in the llama.cpp fork branch and the only new ggml core op
+  (`GGML_OP_HOST_CALL`). Every lookup is the split per layer again, which already waited for its read-ahead:
+  the slot-read race the host call had is gone with it.
 
 ## [0.50.1] - 2026-11-25
 

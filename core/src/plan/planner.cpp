@@ -4517,9 +4517,31 @@ Plan shared_device_cache(Plan p,
     c.moe.overlap = c.moe.io_two_wave = false;
     c.trial.overlap = false;
     c.moe.device_cache_mb = (int) mib(cache_bytes);
-    c.moe.device_cache_fill_lanes = (int) lanes;
-    c.moe.device_cache_read_ahead = (int) m.n_expert_used;   // the router's own top-k, one layer ahead
-    if (mk.device_cache_tps <= 0.0) c.trial.device_tier = 1; // served, and timed as it serves
+    // A prompt's wide passes borrow the cache's memory while they run (the cache empties before each and refills from
+    // the misses after), so a pass as wide as the cache and the small batches' buffers hold together costs the answer
+    // nothing; and on this side every pass re-reads each expert the cache does not hold, so a pass fewer is that read
+    // fewer. Measured on a 16 GB laptop, Qwen3.6-35B, 2959-token prompt: 215 tok/s in 1024-token passes, 390 in one
+    // pass, the decode's cache unchanged.
+    uint32_t lent_width = 0;
+    if (!req.is_pinned("device-cache-lend")) c.moe.device_cache_lend = true;
+    if (c.moe.device_cache_lend && !req.is_pinned("ubatch") && projected.compute_width > 0) {
+        auto buffers = [&](uint32_t w) {
+            const Placement at = projected.at_width(w);
+            return at.raw_host_compute_bytes + at.device_compute_bytes; // one pool: the device reads host memory
+        };
+        const uint32_t now = (uint32_t) p.config.graph_width();
+        const uint64_t room = buffers(now) + cache_bytes;
+        const uint32_t w = narrowed_width(projected.compute_width, now, [&](uint32_t x) { return buffers(x) > room; });
+        if (w > now) {
+            c.n_ubatch = (int) w;
+            lent_width = w;
+        }
+    }
+    // a lane count or read-ahead the caller typed is a pin this rule keeps
+    if (!req.is_pinned("device-cache-fill-lanes")) c.moe.device_cache_fill_lanes = (int) lanes;
+    if (!req.is_pinned("device-cache-read-ahead"))
+        c.moe.device_cache_read_ahead = (int) m.n_expert_used; // the router's own top-k, one layer ahead
+    if (mk.device_cache_tps <= 0.0) c.trial.device_tier = 1;   // served, and timed as it serves
     // The device computes this model whole now: its answers are compared with the cores' before it serves,
     // as for a model held whole there (KnobTrialConfig::answer_device), and where they differ the session
     // reopens as the stream. A device the record already confirmed for this model is not asked again.
@@ -4537,6 +4559,9 @@ Plan shared_device_cache(Plan p,
                " experts per token read ahead; where the device cannot open the model the session reopens as "
                "the stream" +
                (mk.device_cache_tps > 0.0 ? "" : "; this load times its own decode as it serves") +
+               (lent_width > 0 ? "; a prompt borrows the cache's memory for passes " + u64s(lent_width) +
+                                     " tokens wide, re-reading the experts it misses once per pass"
+                               : std::string()) +
                (confirmed ? "; its answers for this model matched the cores' on this machine"
                           : "; the load compares its answers for this model with the cores' before it serves, and "
                             "reopens as the stream where they differ");
@@ -4602,59 +4627,6 @@ Plan plan_from(const RunConfig & base,
     return whole;
 }
 
-// ── where the device expert cache looks its experts up ──
-// A device expert cache splits the device's graph at every layer for the host to bring the layer's
-// experts in. With the host call (MoeStreamConfig::device_cache_host_call) the lookup runs inside the
-// graph, where the device waits for the host, and a token is one graph. Whether that is faster is the
-// machine's answer and no probe gives it: on a 12 GB CUDA card it decoded 5% faster, on a unified-memory
-// laptop slower. So it is measured across loads (MeasuredKnobs::host_call_tps): once the cache's own
-// side has a rate, a load serves with the host call and times it, and the faster side measured serves
-// from then on. One trial at a time: a load timing another side is left alone.
-void choose_host_call(Plan & p, const ModelProfile & m, const PlanRequest & req) {
-    RunConfig & c = p.config;
-    if (c.moe.device_cache_mb <= 0) return;
-    if (req.is_pinned("device-cache-host-call") || req.is_pinned("trial-host-call")) return;
-    for (const Decision & x : p.decisions)
-        if (x.knob == "device-cache-host-call") return;
-    // dt:plan.host-call
-    const KnobTrialConfig & t = c.trial;
-    if (t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0 || t.host_call_side >= 0) return;
-    const MeasuredKnobs & mk = m.knobs;
-    // The rate without it: its own side's, or the cache's, which was timed without it.
-    const double off = mk.no_host_call_tps > 0.0 ? mk.no_host_call_tps : mk.device_cache_tps;
-    if (off <= 0.0) return;
-    Decision d;
-    d.knob = "device-cache-host-call";
-    char rates[160];
-    if (lost(mk.host_call_unviable)) {
-        d.value = "off";
-        d.source = Source::Measured;
-        d.brief = "The device cache's lookup splits the graph at every layer: loads with it failed here.";
-        d.reason = "loads with the lookup inside the device's graph failed on this machine";
-    } else if (mk.host_call_tps <= 0.0) {
-        c.moe.device_cache_host_call = true;
-        c.trial.host_call_side = 1;
-        d.value = "on";
-        d.source = Source::Derived;
-        std::snprintf(rates, sizeof(rates), "%.2f tok/s", off);
-        d.brief = "The device cache's lookup runs inside the device's graph on this load, which times it.";
-        d.reason = std::string("the device cache decoded ") + rates +
-                   " with a graph split at every layer; this load serves with the lookup inside the device's "
-                   "graph and times it, and the faster of the two serves from the next load";
-    } else {
-        const bool on = mk.host_call_tps > off;
-        c.moe.device_cache_host_call = on;
-        d.value = on ? "on" : "off";
-        d.source = Source::Measured;
-        std::snprintf(rates, sizeof(rates), "%.2f tok/s with the lookup inside the device's graph against %.2f",
-                      mk.host_call_tps, off);
-        d.brief = on ? "The device cache's lookup runs inside the device's graph: it decoded faster here."
-                     : "The device cache's lookup splits the graph at every layer: that decoded faster here.";
-        d.reason = std::string(rates) + " with the graph split at every layer, both measured on loads here";
-    }
-    p.decisions.push_back(d);
-}
-
 Plan plan_run_placed(const RunConfig & base,
                      const HardwareProfile & hw,
                      const ModelProfile & model,
@@ -4670,9 +4642,7 @@ Plan plan_run(const RunConfig & base,
               const Placement & projected,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
-    Plan p = plan_run_placed(base, hw, model, projected, req, pol);
-    choose_host_call(p, model, req);
-    return p;
+    return plan_run_placed(base, hw, model, projected, req, pol);
 }
 
 namespace {

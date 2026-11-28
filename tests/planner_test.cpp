@@ -4160,35 +4160,6 @@ int main() {
                       "device tier, the cache measured past the fitter's price: kept, the other side never opened",
                       e ? e->reason : "no decision");
             }
-            // The cache kept on a measured rate: the next load looks its experts up inside the device's
-            // graph and times it; with both sides measured the faster serves and nothing is timed again.
-            {
-                MeasuredKnobs kept;
-                kept.device_cache_tps = 20.0;
-                const Plan hc = tier_on(slow_cores, kept);
-                const Decision * h = find(hc, "device-cache-host-call");
-                check(hc.config.moe.device_cache_host_call && hc.config.trial.host_call_side == 1 && h &&
-                          h->source == Source::Derived && validate(hc.config).ok &&
-                          (!hc.config.fallback || !hc.config.fallback->moe.device_cache_host_call),
-                      "host call, the cache's side measured: served with the lookup in the graph and timed",
-                      h ? h->reason : "no decision");
-                kept.host_call_tps = 21.0;
-                const Plan faster = tier_on(slow_cores, kept);
-                check(faster.config.moe.device_cache_host_call && faster.config.trial.host_call_side == -1,
-                      "host call, measured faster: kept, not timed again");
-                kept.host_call_tps = 19.0;
-                const Plan slower = tier_on(slow_cores, kept);
-                check(!slower.config.moe.device_cache_host_call && slower.config.trial.host_call_side == -1,
-                      "host call, measured slower: off, not timed again");
-                kept.host_call_tps = 0.0;
-                kept.host_call_unviable = MeasuredKnobs::unviable_max;
-                const Plan failed = tier_on(slow_cores, kept);
-                check(!failed.config.moe.device_cache_host_call && failed.config.trial.host_call_side == -1,
-                      "host call, failed to open here: off");
-                // A load still timing the cache's own side leaves the lookup alone.
-                check(!tier.config.moe.device_cache_host_call && tier.config.trial.host_call_side == -1,
-                      "host call, the device tier still timed: one trial at a time");
-            }
             MeasuredKnobs under;
             under.device_cache_tps = 5.0;
             check(tier_on(slow_cores, under).config.trial.device_tier == 0,
@@ -4890,6 +4861,62 @@ int main() {
             check(rel && rel->value == "off" && !p.config.moe.release_mmap,
                   std::string("big table, ") + mc.first + ": a table left mapped keeps the mapping",
                   rel ? rel->value : "no decision");
+        }
+    }
+
+    // ── a streamed model on a device that reads this same memory: its cache filled in place ──
+    // The rule that moves the stream's cache onto a shared-memory device also lends that cache to a wide
+    // prompt and sets the fill lanes and the read-ahead; a value the caller typed for any of them stays.
+    {
+        HardwareProfile uma = unified();
+        uma.host_bandwidth_gibs = 60.0;
+        ComputeDevice & acc = uma.devices[1];
+        acc.usable = Tri::Yes;
+        acc.runs_expert_op = Tri::Yes;
+        acc.identity_ok = Tri::Yes;
+        acc.memory_bandwidth_gibs = 120.0;
+        Placement pl;
+        pl.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            pl.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        pl.compute_width = 8192;
+        pl.host_compute_per_token = 256 * KiB; // wide enough that the stream's own width rule narrows the pass
+        pl.raw_host_compute_bytes = 8192ull * 256 * KiB;
+        pl.n_ctx = 16384;
+        RunConfig long_ctx = base_cfg();
+        long_ctx.n_ctx = 16384; // a context wider than the widest pass, so the width is the rule's
+        const auto plan_on = [&](const PlanRequest & r) {
+            return plan_run(long_ctx, uma, model, pl, r, PlannerPolicy::defaults());
+        };
+        const Plan on = plan_on(PlanRequest{});
+        const Decision * d = find(on, "device-cache-mb");
+        const bool moved = d && on.config.moe.device_cache_mb > 0 && !on.config.moe.enabled;
+        check(moved, "shared cache: the stream's cache moves onto the device", d ? d->reason : "no decision");
+        if (moved) {
+            check(on.config.moe.device_cache_lend && on.config.graph_width() > on.config.fallback->graph_width(),
+                  "shared cache: the cache is lent to a prompt, its passes widened into that memory",
+                  std::to_string(on.config.graph_width()) + " vs " + std::to_string(on.config.fallback->graph_width()));
+            check(on.config.moe.device_cache_fill_lanes > 0 &&
+                      on.config.moe.device_cache_read_ahead == (int) model.n_expert_used,
+                  "shared cache: fill lanes from the storage probe, read-ahead the router's top-k");
+            PlanRequest pinned;
+            pinned.pinned = {"device-cache-fill-lanes", "device-cache-read-ahead", "ubatch"};
+            RunConfig typed = long_ctx;
+            typed.moe.device_cache_fill_lanes = 3;
+            typed.moe.device_cache_read_ahead = 0;
+            const Plan kept = plan_run(typed, uma, model, pl, pinned, PlannerPolicy::defaults());
+            check(kept.config.moe.device_cache_fill_lanes == 3 && kept.config.moe.device_cache_read_ahead == 0 &&
+                      kept.config.graph_width() == typed.graph_width(),
+                  "shared cache: typed fill lanes, read-ahead and width are kept",
+                  std::to_string(kept.config.moe.device_cache_fill_lanes) + " lanes, read-ahead " +
+                      std::to_string(kept.config.moe.device_cache_read_ahead) + ", width " +
+                      std::to_string(kept.config.graph_width()));
+            PlanRequest no_lend;
+            no_lend.pinned = {"device-cache-lend"};
+            const Plan unlent = plan_on(no_lend);
+            check(!unlent.config.moe.device_cache_lend &&
+                      unlent.config.graph_width() == unlent.config.fallback->graph_width(),
+                  "shared cache: lending typed off keeps the stream's width");
         }
     }
 

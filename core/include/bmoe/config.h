@@ -118,24 +118,24 @@ struct MoeStreamConfig {
     // (docs/hardware-planning.md). Needs device_cache_mb.
     float device_cache_cpu_share = 0.0f;
     // How that cache's misses reach it, all lossless (the gates compare each with the plain upload):
-    // - fill lanes: where the host writes the device's memory in place (unified memory; ggml's
-    //   get_host_base), the misses are read from the file straight into the cache's slots by this many
-    //   reader lanes, instead of copied from the mapping. 0 copies from the mapping.
+    // - fill lanes: where the host writes the device's memory in place (unified memory: the backend
+    //   exports ggml_backend_buffer_get_host_base), the misses are read from the file straight into
+    //   the cache's slots by this many reader lanes, instead of copied from the mapping. 0 copies
+    //   from the mapping.
     int device_cache_fill_lanes = 0;
-    // - host call: the slot lookup runs inside the graph where the device can wait for the host
-    //   (GGML_OP_HOST_CALL), so a token is one graph instead of a split per layer. Whether one graph
-    //   beats the splits is the device's round trip against its sync, so it is measured, not assumed.
-    bool device_cache_host_call = false;
-    // - with the host call and a CPU share, the cores compute their share of the misses inside the
-    //   graph on this many threads while the device computes the hits; 0 keeps the split per layer.
-    int device_cache_cpu_threads = 0;
-    // - async admission: with the CPU-miss threads, every miss of a decoded token is computed by them,
-    //   and the misses used more than what they would evict enter the cache through writes made in the
-    //   background, so no layer waits for an upload; the cache stops churning on misses used once.
-    bool device_cache_async_admit = false;
+    // - debug: every fill started in the background (the read-ahead) first fills its slot with
+    //   ones and waits this long before it reads, so a lookup that reads a slot before its fill
+    //   lands computes garbage, and the gates catch it (G25h). 0 is off; never for a real run.
+    int device_cache_fill_delay_us = 0;
+    static constexpr int device_cache_fill_delay_us_max = 1000000;
     // - read-ahead: the next layer's router, applied to this layer's input, names this many experts
     //   per token that are filled while this layer computes. 0 is off.
     int device_cache_read_ahead = 0;
+    // EXPERIMENTAL: the device cache lives in the compute buffer past what small batches use, and a prompt's
+    // wide passes take that memory while they run; the cache empties before each and refills from the
+    // misses after (llama_context_params::moe_cache_lend). One reservation serves the prompt and the
+    // answer. Needs device_cache_mb and no CPU share.
+    bool device_cache_lend = false;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the
@@ -744,10 +744,6 @@ struct KnobTrialConfig {
     // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
     // model is fixed when it is loaded, so a side is timed by a load that serves it.
     int shared_device_side = -1;
-    // Whether the device expert cache's lookup runs inside the device's graph (the host call), decided
-    // across loads (MeasuredKnobs::host_call_tps): 1 times the decode with it, 0 without it; -1
-    // neither. It is fixed when the context is created, so a side is timed by a load that serves it.
-    int host_call_side = -1;
     // The device whose answers for this model the load compares with the cores' before it serves
     // (ggml's name for it, the key the verdict is kept under: MeasuredKnobs::device_answers); empty,
     // nothing is compared. A plan that moves a whole model onto a device by its own choice asks for
@@ -775,8 +771,7 @@ struct KnobTrialConfig {
     bool test_answer_differs = false;
 
     bool enabled() const {
-        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || shared_device_side >= 0 ||
-               host_call_side >= 0;
+        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || shared_device_side >= 0;
     }
 
     static constexpr int threads_max_candidates = 2;
@@ -988,15 +983,12 @@ template <class Config> Config held_on_cores(Config cfg) {
     cfg.moe.device_cache_mb = 0;
     cfg.moe.device_cache_cpu_share = 0.0f;
     cfg.moe.device_cache_fill_lanes = 0;
-    cfg.moe.device_cache_host_call = false;
-    cfg.moe.device_cache_cpu_threads = 0;
-    cfg.moe.device_cache_async_admit = false;
+    cfg.moe.device_cache_fill_delay_us = 0;
     cfg.moe.device_cache_read_ahead = 0;
     cfg.buft_overrides.clear();
     cfg.trial.answer_device.clear();
     cfg.trial.answer_prompt_per_token = -1.0f; // the check's weighing, with no device left to compare
     if (cfg.trial.shared_device_side == 1) cfg.trial.shared_device_side = 0;
-    cfg.trial.host_call_side = -1; // no device cache left to look up
     return cfg;
 }
 

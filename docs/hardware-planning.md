@@ -1366,8 +1366,24 @@ the cache does not hold are filled into the graph's copy on the same lanes, from
 being copied from the mapping one range at a time. On the same laptop, a 3022-token prompt: Qwen3.6-35B
 prefilled at 268 tok/s (59 before that fill, 538 streamed with the prefill device), Flash-Next at 123
 (202 streamed), its first token as soon as the stream's (44.9 s against 46.5) since the load is
-shorter, then decoding twice as fast. The plan does not weigh the prefill yet: a machine that serves
-long prompts can be faster on the stream.
+shorter, then decoding twice as fast.
+
+Each such pass re-reads every expert the cache does not hold, so a pass fewer is that read fewer, and
+the policy that holds compute buffers to their share of memory (a prompt paid once, the cache every
+token) does not fit this side: its passes are not cheap. The cache is therefore lent to the prompt
+(`--device-cache-lend`): its slots live in the device's compute buffer past what the small batches
+use, a wide pass takes that memory while it runs (the cache empties before it and refills from the
+misses after), and the pass is as wide as the cache and the small batches' buffers hold together, up
+to the context. The cache the answer decodes from keeps its size. On the same laptop, Qwen3.6-35B
+Q4_K_M at an 8192-token context, a 2959-token prompt: 215 tok/s in 1024-token passes (64 thousand
+experts filled, 7.5 s), 367 in one pass (25 thousand, 3.1 s), first token 21.4 -> 15.8 s, the decode
+unchanged (25.0 / 25.1 tok/s, hit rate 94.7%) and the text identical. Giving the wide pass its own
+buffers instead took the memory from the cache: the same prefill, the decode 10% slower. The plan arms
+lending on this side; the mechanism itself serves any device, the misses written in place where the host
+writes the device's memory and uploaded on the backend's queue elsewhere (gate G25g runs it on a device
+of the second kind, G25h on one of the first where the build has one: misses filled in place, read ahead
+in the background, every background fill held back so that a lookup that reads a slot before its fill
+lands fails the gate).
 
 ### A model held in memory, on a device that shares it
 
