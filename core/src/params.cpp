@@ -631,6 +631,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-expert-host-buffer", "Measure the experts' copy", G::Cache, L::Experimental,
+                          "Time the decode of this load's side of where the device expert cache's misses upload "
+                          "from, to be compared across loads: 1 with --expert-host-buffer, 0 without. -1 times "
+                          "neither. Changes no output; the plan sets it on a load that serves a side not yet "
+                          "measured on this machine.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.staging_side; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("trial-device-answer", "Check the device's answers", G::Memory, L::Experimental,
                           "Before serving, compare this model's answers on the device its layers are on with the "
                           "cores': a short fixed sequence decoded on both, and where the device does not pick the "

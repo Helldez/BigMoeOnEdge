@@ -172,6 +172,22 @@ double measure_crossing(ggml_backend_dev_t dev, int64_t n_embd) {
 // neither the link's nominal width nor a pinned-memory benchmark: on a rented card the two differ.
 constexpr uint64_t k_upload_buffer = 64ull << 20;
 
+// The two uploads, from the file's kind of memory and from the backend's own host memory, are taken
+// in turns, k_upload_rounds of each, and each is the median of its own. One sample of each flipped the
+// plan's verdict between loads of the same model on a rented card shared with other tenants (a
+// neighbour's burst landed in one sample and not the other), and the verdict was worth 66 against 44
+// tok/s. Taken in turns, a burst lands in a pair's both sides or in one round, and the median drops
+// that round.
+constexpr int k_upload_rounds = 3;
+
+// The median of the rounds that measured something: a round that failed (0) is no reading.
+double median_rate(std::vector<double> v) {
+    v.erase(std::remove_if(v.begin(), v.end(), [](double x) { return !(x > 0.0); }), v.end());
+    if (v.empty()) return 0.0;
+    std::nth_element(v.begin(), v.begin() + (std::ptrdiff_t)(v.size() / 2), v.end());
+    return v[v.size() / 2];
+}
+
 // `from_host_buffer`: the source is a buffer of the device's own host buffer type instead of
 // ordinary memory; 0 where the device has no such type.
 double measure_upload(ggml_backend_dev_t dev, uint64_t granule, bool from_host_buffer) {
@@ -338,8 +354,13 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
         // Only where there is a second pool to reach: on a shared one a miss is a copy within it.
         const uint64_t expert = model.expert_slice_bytes * std::max<uint32_t>(1, model.n_expert_projections);
         if (d.has_own_memory() && expert > 0) {
-            d.upload_gibs = measure_upload(dev, expert, false);
-            d.upload_host_buffer_gibs = measure_upload(dev, expert, true);
+            std::vector<double> mapped, own;
+            for (int r = 0; r < k_upload_rounds; ++r) {
+                mapped.push_back(measure_upload(dev, expert, false));
+                own.push_back(measure_upload(dev, expert, true));
+            }
+            d.upload_gibs = median_rate(mapped);
+            d.upload_host_buffer_gibs = median_rate(own);
             // At the thread count the host's own matmul was fastest at, the one a decode starts from.
             const int threads = (int) (hw.best_threads > 0 ? hw.best_threads : hw.n_cores);
             d.host_hop_seconds = measure_host_hop(dev, (int64_t) model.n_embd, threads);

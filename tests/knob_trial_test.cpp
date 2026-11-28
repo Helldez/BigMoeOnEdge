@@ -445,6 +445,56 @@ int main() {
                   "record: a rate handed on clears the failure and its room together");
         }
 
+        // The experts' copy's two sides, as the loads that served them timed them: counted, read back as
+        // written, merged beside what else was measured, and set by the load that timed its side.
+        {
+            MeasuredKnobs st;
+            st.hardware = a.hardware;
+            st.engine = a.engine;
+            st.staging_tps = 66.0;
+            st.no_staging_tps = 44.0;
+            check(st.verdicts() == 2, "record: both sides of the experts' copy count");
+            std::vector<MeasuredKnobs> stback;
+            check(parse_measured_knobs(format_measured_knobs({st}), stback, err) && stback.size() == 1 &&
+                      std::fabs(stback[0].staging_tps - 66.0) < 1e-9 &&
+                      std::fabs(stback[0].no_staging_tps - 44.0) < 1e-9,
+                  "record: the experts' copy's rates read back as written");
+            std::vector<MeasuredKnobs> kept;
+            MeasuredKnobs first = st;
+            first.no_staging_tps = 0.0;
+            keep_measured_knobs(kept, first);
+            MeasuredKnobs second = st;
+            second.staging_tps = 0.0;
+            keep_measured_knobs(kept, second);
+            check(kept.size() == 1 && std::fabs(kept[0].staging_tps - 66.0) < 1e-9 &&
+                      std::fabs(kept[0].no_staging_tps - 44.0) < 1e-9,
+                  "record: a load timing one side keeps the other's rate");
+            KnobTrialConfig copy_side;
+            copy_side.staging_side = 1;
+            MeasuredKnobs timed;
+            record_side_rate(copy_side, 61.5, timed);
+            check(names_side(copy_side) && std::fabs(timed.staging_tps - 61.5) < 1e-9 && timed.no_staging_tps == 0.0,
+                  "record: a load serving the copy times the copy's side");
+            // A load that drafts records no side: its rate counts the accepted drafts.
+            MeasuredKnobs before = timed;
+            before.device_cache_tps = 40.0;
+            before.wide_decode_tps = 41.0;
+            before.shared_device_tps = 42.0;
+            MeasuredKnobs drafted = before;
+            KnobTrialConfig sides[4];
+            sides[0].staging_side = 0;
+            sides[1].device_tier = 1;
+            sides[2].width_side = 1;
+            sides[2].width_narrow = 512;
+            sides[3].shared_device_side = 1;
+            for (const KnobTrialConfig & side : sides)
+                record_side_rate(side, 151.6, drafted, /*drafted*/ true);
+            check(drafted.staging_tps == before.staging_tps && drafted.no_staging_tps == 0.0 &&
+                      drafted.device_cache_tps == 40.0 && drafted.wide_decode_tps == 41.0 &&
+                      drafted.shared_device_tps == 42.0 && drafted.verdicts() == before.verdicts(),
+                  "record: a drafting load leaves every side's rate as it was");
+        }
+
         // The shared-memory device's prompt rates, as the load that compared the answers timed them: read
         // back as written, counted, merged beside the decode rates, and absent from an earlier record.
         MeasuredKnobs sp;

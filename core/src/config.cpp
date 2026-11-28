@@ -140,6 +140,18 @@ ValidationResult validate(const RunConfig & cfg) {
                     "a time");
     if (cfg.trial.shared_device_side == 1 && cfg.n_gpu_layers == 0)
         return fail("{trial-shared-device} 1 times the model on a device: it needs {gpu-layers} above 0");
+    if (cfg.trial.staging_side < -1 || cfg.trial.staging_side > 1)
+        return fail("{trial-expert-host-buffer} is the experts' copy's side a load measures: -1 (none), 0 or 1");
+    if (cfg.trial.staging_side >= 0 &&
+        (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0 || cfg.trial.shared_device_side >= 0))
+        return fail("{trial-expert-host-buffer} and {trial-device-cache}, {trial-width} or {trial-shared-device} each "
+                    "time a load's decode: one at a time");
+    if (cfg.trial.staging_side >= 0 && cfg.moe.device_cache_mb <= 0)
+        return fail("{trial-expert-host-buffer} times where the device expert cache's misses upload from: it needs "
+                    "{device-cache-mb}");
+    if (cfg.trial.staging_side >= 0 && cfg.trial.staging_side != (cfg.moe.expert_host_buffer.empty() ? 0 : 1))
+        return fail("{trial-expert-host-buffer} names the side this load serves: 1 with {expert-host-buffer}, 0 "
+                    "without");
     // The answer check compares a model held whole in memory on a device with the same file on the
     // cores, and reopens on the cores where they differ: there has to be a device placement to compare,
     // and nothing in the load that only a device placement can carry.

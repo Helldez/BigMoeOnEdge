@@ -549,7 +549,19 @@ experts would use (`width_narrow` and its rates,
 on a machine whose device reads that same memory, on the cores or every layer on the device
 (`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
 `no_shared_device_prompt_tps` the load that compared the answers timed,
-[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), and
+where a device expert cache's misses upload from: a copy of the experts in the device's own host memory
+or the file's mapping (`staging_tps`, `no_staging_tps`). On a rented card shared with other tenants, the
+probe that compares the two upload paths named one on a load and the other on the next, for 66 against
+44 tok/s; once both sides are timed, the rates decide.
+
+A load that drafts (`--mtp`, `--ngram`) times no side of any of these decisions. Its tokens per second
+count the drafts its verifies accepted, so its rate compares with no side timed without them: on a
+rented 24 GB card an n-gram load recorded 151.6 tok/s for the mapping against 105.3 for the copy, and
+every load after turned the copy off and decoded 30-40% slower. The session does not time it
+(`record_side_rate` keeps nothing from a drafting load). The experts' copy's rule does not ask such a load
+to time a side; the device tier, width and shared-device rules may still name one, which that load then
+serves without timing it.
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
